@@ -83,6 +83,8 @@ pub unsafe fn show(items: Vec<StartupItem>, config: AppConfig) {
         .build(std::ptr::null_mut());
         
     if let Ok(hwnd) = hwnd_res {
+        #[cfg(feature = "shell-broker-smoke")]
+        crate::shell_batch::record_mock(&format!("DIALOG_CREATED|{:x}", hwnd as usize));
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             if IsDialogMessageW(hwnd, &msg) == 0 {
