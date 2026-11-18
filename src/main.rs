@@ -80,6 +80,7 @@ pub mod ui;
 pub mod engine;
 pub mod config;
 pub mod registry;
+pub mod shell_batch;
 pub mod utils;
 pub mod updater;
 pub mod watcher_config;
@@ -170,6 +171,12 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
 
     // Parse CLI arguments
     let startup_items = parse_cli_args();
+    // Explorer calls static verbs once per selection; collect before requesting UAC.
+    // The executable manifest is asInvoker so these short-lived processes stay unelevated.
+    if !is_admin() && !startup_items.is_empty() {
+        unsafe { crate::shell_batch::collect(startup_items, config.context_menu_dialog_only); }
+        ExitProcess(0);
+    }
     let _ = STARTUP_ITEMS.set(startup_items.clone());
 
     // If context menu dialog is enabled and we have args, bypass single instance and show dialog directly
