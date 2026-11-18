@@ -9,16 +9,23 @@ use crate::ui::state::BatchAction;
 use crate::engine::wof::WofAlgorithm;
 use crate::utils::to_wstring;
 use std::ptr;
+use std::sync::{Arc, atomic::{AtomicU8, Ordering}};
 use std::time::{Duration, Instant};
 
 const BROKER_CLASS: &str = "CompactRS_ExplorerBatchBroker";
 const BROKER_MUTEX: &str = "Local\\CompactRS_ExplorerBatchBroker_Mutex";
 const BROKER_TIMER: usize = 81;
 const BROKER_DELAY: Duration = Duration::from_millis(650);
-const BROKER_LIFETIME: Duration = Duration::from_secs(25);
+const BROKER_LIFETIME: Duration = Duration::from_secs(60);
+const LAUNCH_WAIT: Duration = Duration::from_secs(180);
+const LAUNCH_PENDING: u8 = 0;
+const LAUNCH_SUCCEEDED: u8 = 1;
+const LAUNCH_FAILED: u8 = 2;
 const WAIT_OBJECT_0: u32 = 0;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const INFINITE: u32 = 0xFFFFFFFF;
+const SMTO_ABORTIFHUNG: u32 = 0x0002;
+const SMTO_BLOCK: u32 = 0x0001;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -26,6 +33,13 @@ unsafe extern "system" {
     fn ReleaseMutex(handle: HANDLE) -> BOOL;
     fn WaitForSingleObject(handle: HANDLE, milliseconds: DWORD) -> DWORD;
 }
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn SendMessageTimeoutW(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM,
+                           flags: u32, timeout: u32, result: *mut usize) -> isize;
+}
+
 
 pub fn encode_item(item: &StartupItem) -> String {
     let algo = match item.algorithm {
@@ -75,7 +89,11 @@ unsafe fn send_item(hwnd: HWND, item: &StartupItem) -> bool {
         cbData: (payload.len() * 2) as u32,
         lpData: payload.as_ptr() as *mut _,
     };
-    SendMessageW(hwnd, WM_COPYDATA, 0, &cds as *const _ as isize) != 0
+    let mut acknowledgement = 0usize;
+    SendMessageTimeoutW(
+        hwnd, WM_COPYDATA, 0, &cds as *const _ as isize,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 1500, &mut acknowledgement,
+    ) != 0 && acknowledgement == 1
 }
 
 unsafe fn send_to_window(class_name: &str, items: &[StartupItem]) -> bool {
@@ -114,7 +132,9 @@ unsafe fn launch_as_admin(items: &[StartupItem]) -> bool {
         Ok(exe) => exe,
         Err(_) => return false,
     };
-    let mut arguments = Vec::with_capacity(items.len() * 6);
+    let mut arguments = Vec::with_capacity(items.len() * 6 + 1);
+    // Child MUST NOT request a second elevation, regardless of token detection.
+    arguments.push("--elevated-once".to_owned());
     for item in items {
         arguments.push("--path".to_owned());
         arguments.push(quote_windows_arg(&item.path));
@@ -145,11 +165,18 @@ unsafe fn launch_as_admin(items: &[StartupItem]) -> bool {
     res as isize > 32
 }
 
+enum LaunchPhase {
+    Collecting,
+    Requesting(Instant),
+    Approved(Instant),
+}
+
 struct Broker {
     items: Vec<StartupItem>,
     dialog_only: bool,
     last_item: Instant,
-    elevated_at: Option<Instant>,
+    phase: LaunchPhase,
+    launch_result: Arc<AtomicU8>,
 }
 
 impl Broker {
@@ -185,31 +212,54 @@ impl WindowHandler for Broker {
                     }
                 }
                 WM_TIMER => {
-                    if self.elevated_at.is_none() && self.last_item.elapsed() >= BROKER_DELAY {
-                        // Important: only this medium-integrity broker requests UAC.
-                        let initial = std::mem::take(&mut self.items);
-                        if !launch_as_admin(&initial) {
-                            DestroyWindow(hwnd);
-                            return Some(0);
-                        }
-                        self.elevated_at = Some(Instant::now());
-                    }
-
-                    if let Some(started) = self.elevated_at {
-                        let target = self.target_window();
-                        if !target.is_null() && !self.items.is_empty() {
-                            let pending = std::mem::take(&mut self.items);
-                            for (index, item) in pending.iter().enumerate() {
-                                if !send_item(target, item) {
-                                    self.items.extend_from_slice(&pending[index..]);
-                                    break;
-                                }
+                    match self.phase {
+                        LaunchPhase::Collecting => {
+                            if !self.items.is_empty() && self.last_item.elapsed() >= BROKER_DELAY {
+                                // Mark first! ShellExecuteW("runas") may pump nested Windows
+                                // messages while a consent dialog is open. A timer callback
+                                // MUST NOT issue another elevation request.
+                                self.phase = LaunchPhase::Requesting(Instant::now());
+                                let initial = std::mem::take(&mut self.items);
+                                let status = self.launch_result.clone();
+                                std::thread::spawn(move || {
+                                    let _ = unsafe {
+                                        CoInitializeEx(ptr::null_mut(), COINIT_APARTMENTTHREADED)
+                                    };
+                                    let launched = unsafe { launch_as_admin(&initial) };
+                                    unsafe { CoUninitialize(); }
+                                    status.store(
+                                        if launched { LAUNCH_SUCCEEDED } else { LAUNCH_FAILED },
+                                        Ordering::Release,
+                                    );
+                                });
                             }
                         }
-                        if self.items.is_empty() && self.last_item.elapsed() >= Duration::from_secs(2) {
-                            DestroyWindow(hwnd);
-                        } else if started.elapsed() >= BROKER_LIFETIME {
-                            DestroyWindow(hwnd);
+                        LaunchPhase::Requesting(started) => {
+                            let result = self.launch_result.load(Ordering::Acquire);
+                            if result == LAUNCH_SUCCEEDED {
+                                self.phase = LaunchPhase::Approved(Instant::now());
+                            } else if result == LAUNCH_FAILED || started.elapsed() >= LAUNCH_WAIT {
+                                DestroyWindow(hwnd);
+                            }
+                        }
+                        LaunchPhase::Approved(started) => {
+                            let target = self.target_window();
+                            if !target.is_null() && !self.items.is_empty() {
+                                let pending = std::mem::take(&mut self.items);
+                                for (index, item) in pending.iter().enumerate() {
+                                    if !send_item(target, item) {
+                                        self.items.extend_from_slice(&pending[index..]);
+                                        break;
+                                    }
+                                }
+                            }
+                            if self.items.is_empty()
+                                && self.last_item.elapsed() >= Duration::from_secs(3)
+                            {
+                                DestroyWindow(hwnd);
+                            } else if started.elapsed() >= BROKER_LIFETIME {
+                                DestroyWindow(hwnd);
+                            }
                         }
                     }
                     Some(0)
@@ -247,7 +297,8 @@ pub unsafe fn collect(items: Vec<StartupItem>, dialog_only: bool) {
         items,
         dialog_only,
         last_item: Instant::now(),
-        elevated_at: None,
+        phase: LaunchPhase::Collecting,
+        launch_result: Arc::new(AtomicU8::new(LAUNCH_PENDING)),
     };
     let window = WindowBuilder::new(&mut broker, BROKER_CLASS, "")
         .style(0).size(0, 0).align(WindowAlignment::Manual(0, 0))
