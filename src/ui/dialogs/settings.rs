@@ -1082,9 +1082,20 @@ impl WindowHandler for SettingsState {
                                 let theme = match idx { 0 => AppTheme::System, 1 => AppTheme::Dark, 2 => AppTheme::Light, _ => AppTheme::System };
                                 let new_is_dark = match theme { AppTheme::Dark => true, AppTheme::Light => false, AppTheme::System => crate::ui::theme::is_system_dark_mode() };
                                 self.theme = theme; self.result = Some(theme); self.is_dark = new_is_dark;
+                                crate::ui::theme::set_preferred_app_mode(new_is_dark);
                                 crate::ui::theme::set_window_frame_theme(hwnd, new_is_dark);
+                                // Each tab is a custom panel owning its own WM_CTLCOLOR*
+                                // and WM_ERASEBKGND handlers; update *all* tab properties,
+                                // including hidden tabs, before applying child themes.
+                                for &panel in &self.tab_panels {
+                                    crate::ui::components::panel::Panel::update_theme(panel, new_is_dark);
+                                }
                                 crate::ui::theme::apply_theme_recursive(hwnd, new_is_dark);
-                                InvalidateRect(hwnd, std::ptr::null(), 1);
+                                // Redraw descendants immediately; hidden tabs will use the
+                                // new palette when they become visible.
+                                RedrawWindow(hwnd, std::ptr::null(), std::ptr::null_mut(),
+                                    0x0001 | 0x0004 | 0x0080 | 0x0100);
+
                                 
                                 use GetParent;
                                 let parent = GetParent(hwnd);
