@@ -70,6 +70,9 @@ pub enum UiMessage {
     StatusText(Vec<u16>),
     
     Finished,
+
+    /// The active directory in an Explorer Dialog batch.
+    ContextPath(String),
     
     /// Single item finished: (id, final_size_bytes, total_count, final_state)
     RowFinished(u32, u64, u64, CompressionState),
