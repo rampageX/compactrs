@@ -49,7 +49,12 @@ try {
             if ($launches -gt 1 -or $brokers -gt 1) {
                 throw "Duplicate broker/UAC for $mode. TRACE: $($lines -join ' | ')"
             }
-            $hwnd = [CompactRSWin]::FindWindowW($windowClass, $null)
+            # Windows hosted runners can isolate desktop/window stations: use the
+            # app's window-created trace instead of cross-session FindWindow.
+            $guiCreated = @($lines | Where-Object {
+                if ($mode -eq "dialog") { $_.StartsWith("DIALOG_CREATED|") }
+                else { $_.StartsWith("MAIN_CREATED|") }
+            }).Count -eq 1
             if ($mode -eq "dialog") {
                 $events = @($lines | Where-Object { $_.StartsWith("START|") -or $_.StartsWith("DONE|") })
                 $complete = $events.Count -ge 4 -and
@@ -63,7 +68,7 @@ try {
                 $seenB = ($lines -contains "STARTUP|$b") -or ($lines -contains "MAIN_ADD|$b")
                 $complete = $seenA -and $seenB
             }
-            if ($launches -eq 1 -and $brokers -eq 1 -and $complete -and $hwnd -ne [IntPtr]::Zero) {
+            if ($launches -eq 1 -and $brokers -eq 1 -and $complete -and $guiCreated) {
                 $ready = $true
                 break
             }
