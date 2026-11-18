@@ -26,8 +26,10 @@ const WINDOW_TITLE: &str = "CompactRS";
 
 pub unsafe fn create_main_window(instance: HINSTANCE) -> Result<HWND, String> {
     unsafe {
-        // Enable dark mode for the application
-        theme::set_preferred_app_mode(true);
+        // Select the actual persisted app theme, not system dark mode.
+        let config = AppConfig::load();
+        let is_dark = theme::resolve_mode(config.theme);
+        theme::set_preferred_app_mode(is_dark);
 
         // Initialize Common Controls
         let iccex = INITCOMMONCONTROLSEX {
@@ -36,8 +38,7 @@ pub unsafe fn create_main_window(instance: HINSTANCE) -> Result<HWND, String> {
         };
         crate::types::InitCommonControlsEx(&iccex as *const _ as *const _);
 
-        // Check dark mode
-        let is_dark = theme::is_system_dark_mode();
+        // Match the background brush to the same effective theme.
         let bg_brush = theme::get_background_brush(is_dark);
 
         // Load icon
@@ -50,7 +51,6 @@ pub unsafe fn create_main_window(instance: HINSTANCE) -> Result<HWND, String> {
             title_str.push_str(" [Administrator]");
         }
         
-        let config = AppConfig::load();
         let (win_x, win_y) = if config.window_x < 0 || config.window_y < 0 {
             (CW_USEDEFAULT, CW_USEDEFAULT)
         } else {
