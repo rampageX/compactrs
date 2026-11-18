@@ -254,15 +254,19 @@ impl ContextDialogState {
     /// are reused for an arbitrarily long folder history.
     unsafe fn layout(&mut self, hwnd: HWND) {
         if self.slots.is_empty() { return; }
-        let clipped = self.folders.len() > MAX_VISIBLE;
-        let count = self.folders.len().max(1).min(MAX_VISIBLE);
+        // Build the visual stack from folders that have actually begun.
+        // Never hide the active first directory merely because 6+ future
+        // folders are already in the pending queue.
+        let begun = self.folders.iter().filter(|f| f.id.is_some()).count();
+        let clipped = begun > MAX_VISIBLE;
+        let count = begun.max(1).min(MAX_VISIBLE);
         if self.layout_count != count || self.layout_clipped != clipped {
             self.layout_count = count;
             self.layout_clipped = clipped;
             SetWindowPos(
                 hwnd, std::ptr::null_mut(), 0, 0,
                 crate::ui::theme::scale(WINDOW_WIDTH),
-                crate::ui::theme::scale(dialog_height(self.folders.len())),
+                crate::ui::theme::scale(dialog_height(begun.max(1))),
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
@@ -299,8 +303,14 @@ impl ContextDialogState {
 
     unsafe fn refresh_cards(&mut self, hwnd: HWND) {
         self.layout(hwnd);
-        let start = self.folders.len().saturating_sub(MAX_VISIBLE);
-        for (slot, folder) in self.slots.iter().zip(self.folders.iter().skip(start)) {
+        let begun = self.folders.iter().filter(|f| f.id.is_some()).count();
+        let start = begun.saturating_sub(MAX_VISIBLE);
+        let candidates: Vec<&FolderProgress> = if begun == 0 {
+            self.folders.iter().take(1).collect()
+        } else {
+            self.folders.iter().filter(|f| f.id.is_some()).skip(start).collect()
+        };
+        for (slot, folder) in self.slots.iter().zip(candidates) {
             Label::new(slot.path).set_text(&folder.path);
             Label::new(slot.status).set_text(&folder.status);
             Label::new(slot.stats).set_text_w(&folder.stats());
