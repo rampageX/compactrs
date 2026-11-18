@@ -64,7 +64,7 @@ fn get(url: &str) -> Result<Link, &'static str> {
     if request.0.is_null() { return Err("HTTP request failed"); }
 
     let headers = crate::w!("Accept: application/vnd.github+json\r\n");
-    if unsafe { WinHttpSendRequest(request.0, headers.as_ptr(), u32::try_from((headers.len()-1)*2).unwrap_or(0), null(), 0, 0, 0) } == 0 {
+    if unsafe { WinHttpSendRequest(request.0, headers.as_ptr(), (headers.len()-1) as u32, null(), 0, 0, 0) } == 0 {
         return Err("HTTP send failed");
     }
     if unsafe { WinHttpReceiveResponse(request.0, null_mut()) } == 0 {
