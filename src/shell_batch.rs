@@ -41,6 +41,16 @@ unsafe extern "system" {
 }
 
 
+#[cfg(feature = "shell-broker-smoke")]
+pub fn record_mock(line: &str) {
+    use std::io::Write;
+    if let Ok(path) = std::env::var("COMPACTRS_MOCK_LOG") {
+        if let Ok(mut out) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(out, "{}", line);
+        }
+    }
+}
+
 pub fn encode_item(item: &StartupItem) -> String {
     let algo = match item.algorithm {
         WofAlgorithm::Xpress4K => "xpress4k",
@@ -157,8 +167,14 @@ unsafe fn launch_as_admin(items: &[StartupItem]) -> bool {
     if command.encode_utf16().count() >= 32000 { return false; }
     let exe_w = to_wstring(&exe.to_string_lossy());
     let args_w = to_wstring(&command);
+    #[cfg(feature = "shell-broker-smoke")]
+    record_mock("UAC_LAUNCH");
+    #[cfg(feature = "shell-broker-smoke")]
+    let verb = crate::w!("open");
+    #[cfg(not(feature = "shell-broker-smoke"))]
+    let verb = crate::w!("runas");
     let res = ShellExecuteW(
-        ptr::null_mut(), crate::w!("runas").as_ptr(), exe_w.as_ptr(),
+        ptr::null_mut(), verb.as_ptr(), exe_w.as_ptr(),
         if command.is_empty() { ptr::null() } else { args_w.as_ptr() },
         ptr::null(), SW_SHOW,
     );
@@ -300,6 +316,8 @@ pub unsafe fn collect(items: Vec<StartupItem>, dialog_only: bool) {
         phase: LaunchPhase::Collecting,
         launch_result: Arc::new(AtomicU8::new(LAUNCH_PENDING)),
     };
+    #[cfg(feature = "shell-broker-smoke")]
+    record_mock("BROKER_CREATED");
     let window = WindowBuilder::new(&mut broker, BROKER_CLASS, "")
         .style(0).size(0, 0).align(WindowAlignment::Manual(0, 0))
         .build(ptr::null_mut());
