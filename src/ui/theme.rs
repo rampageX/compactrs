@@ -156,10 +156,16 @@ pub unsafe fn apply_theme(hwnd: HWND, control_type: ControlType, is_dark: bool) 
     
     SetWindowTheme(hwnd, theme_w.as_ptr(), psz_sub_app_name);
 
-    if is_dark {
-        // Force the control to update its theme data immediately
-        SendMessageW(hwnd, WM_THEMECHANGED, 0, 0);
+    // Re-open theme handles in both directions. Without this Windows can
+    // retain dark visual-style assets after switching back to the light theme.
+    SendMessageW(hwnd, WM_THEMECHANGED, 0, 0);
+    if control_type == ControlType::CheckBox {
+        // Native dark-theme BUTTON controls ignore WM_CTLCOLORBTN for captions.
+        // Our subclass repaints only the caption; the native check glyph and
+        // input semantics are preserved in both themes.
+        crate::ui::checkbox_caption::apply(hwnd, is_dark);
     }
+    InvalidateRect(hwnd, std::ptr::null(), 1);
 }
 
 /// Applies flat (borderless, no grid lines) theme to a ListView control.
@@ -356,6 +362,21 @@ unsafe fn apply_theme_to_child(hwnd: HWND, is_dark: bool) {
      let len = GetClassNameW(hwnd, name_buf.as_mut_ptr(), 256);
      let class_name = String::from_utf16_lossy(&name_buf[..len as usize]).to_lowercase();
      
+     // Custom child panels remember their color through a window property.
+     // Recursive control theming did not update this property, leaving entire
+     // settings pages in the previous theme until the dialog was reopened.
+     if GetPropW(hwnd, crate::w!("CompactRs_Theme").as_ptr()) as usize != 0 {
+         crate::ui::components::panel::Panel::update_theme(hwnd, is_dark);
+         InvalidateRect(hwnd, std::ptr::null(), 1);
+         return;
+     }
+
+     // Static text derives its color from the parent WM_CTLCOLORSTATIC handler.
+     if class_name == "static" {
+         InvalidateRect(hwnd, std::ptr::null(), 1);
+         return;
+     }
+
      // Special handling for ListView - use flat theme helper
      if class_name == "syslistview32" {
          apply_flat_listview_theme(hwnd, is_dark);

@@ -1111,6 +1111,7 @@ unsafe extern "system" {
     pub fn RemovePropW(hWnd: HWND, lpString: LPCWSTR) -> HANDLE;
     pub fn EnableWindow(hWnd: HWND, bEnable: BOOL) -> BOOL;
     pub fn InvalidateRect(hWnd: HWND, lpRect: *const RECT, bErase: BOOL) -> BOOL;
+    pub fn RedrawWindow(hWnd: HWND, lprcUpdate: *const RECT, hrgnUpdate: HANDLE, flags: u32) -> BOOL;
     pub fn GetClientRect(hWnd: HWND, lpRect: *mut RECT) -> BOOL;
     pub fn GetObjectW(h: HANDLE, c: i32, pv: LPVOID) -> i32;
     pub fn CreateFontIndirectW(lplf: *const LOGFONTW) -> HFONT;

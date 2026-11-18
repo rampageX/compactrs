@@ -14,5 +14,6 @@ pub mod wrappers;
 pub mod layout;
 pub mod declarative;
 pub mod subclass;
+pub mod checkbox_caption;
 pub mod edit_subclass;
 pub mod input;

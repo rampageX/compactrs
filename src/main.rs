@@ -162,11 +162,26 @@ fn is_admin() -> bool {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn WinMainCRTStartup() {
+    #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-dark-checkbox") {
+        let result = unsafe { crate::ui::checkbox_caption::verify_dark_caption_pixels() };
+        ExitProcess(if result { 0 } else { 4 });
+    }
+    #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-updater-live") {
+        ExitProcess(if crate::updater::updater_live_selftest().is_ok() { 0 } else { 3 });
+    }
+    // A headless, CI-only validation of our update security checks. This
+    // branch is absent from production binaries.
+    #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-updater") {
+        ExitProcess(if crate::updater::updater_selftest() { 0 } else { 2 });
+    }
     // Initialize Theme System early
     crate::ui::theme::init();
-    crate::ui::theme::set_preferred_app_mode(true);
-
     let mut config = crate::config::AppConfig::load();
+    crate::ui::theme::set_preferred_app_mode(
+        crate::ui::theme::resolve_mode(config.theme));
     #[cfg(feature = "shell-broker-smoke")]
     {
         config.context_menu_dialog_only = std::env::var("COMPACTRS_TEST_DIALOG")

@@ -6,6 +6,7 @@ on:
     branches:
       - fix/explorer-single-uac-serial-dialog
       - feature/dark-selection-dialog-stack
+      - fix/fork-updater-dark-controls
   workflow_dispatch:
 
 permissions:
@@ -19,11 +20,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+      - name: Verify automatic Asia/Shanghai release version script
+        shell: pwsh
+        run: |
+          $time0 = [datetime]::SpecifyKind([datetime]::new(2026,11,18,13,45,0), [DateTimeKind]::Utc)
+          $result0 = & ./scripts/generate-release-version.ps1 -UtcNow $time0
+          if ($result0 -ne "v2026.11.18-r2145") { throw "Version test 0 failed: $result0" }
+          $time1 = [datetime]::SpecifyKind([datetime]::new(2026,11,18,16,5,0), [DateTimeKind]::Utc)
+          $result1 = & ./scripts/generate-release-version.ps1 -UtcNow $time1
+          if ($result1 -ne "v2026.11.19-r0005") { throw "Version test 1 failed: $result1" }
+          $time2 = [datetime]::SpecifyKind([datetime]::new(2026,5,10,6,15,0), [DateTimeKind]::Utc)
+          $result2 = & ./scripts/generate-release-version.ps1 -UtcNow $time2
+          if ($result2 -ne "v2026.5.10-r1415") { throw "Version test 2 failed: $result2" }
+          Write-Host "PASS: release timestamp UTC+8, calendar rollover, no leading-zero month."
       - name: Build test binary (no release, no UPX)
         shell: pwsh
         run: cargo +nightly build --release --target x86_64-pc-windows-msvc
         env:
-          APP_VERSION: v2026.11.18-shell-test
+          APP_VERSION: v2026.11.18-r2145-test
           RUSTFLAGS: "-C target-feature=+crt-static"
       - uses: actions/upload-artifact@v4
         with:
@@ -39,3 +53,28 @@ jobs:
       - name: Exercise Windows Explorer broker and Dialog serial queue
         shell: pwsh
         run: ./scripts/smoke-shell-broker.ps1
+      - name: Verify updater metadata, version ordering and real Windows SHA256
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          # GUI subsystem apps do not reliably set PowerShell's $LASTEXITCODE.
+          # Start-Process -Wait gives the actual child exit code.
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater" -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Updater self-test failed with exit code $($test.ExitCode)" }
+          Write-Host "PASS: fork updater parser, version ordering, and CryptoAPI SHA256."
+      - name: Live fork Release API and asset SHA256 verification (no installation)
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater-live" -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "GitHub live updater test failed with code $($test.ExitCode)" }
+          Write-Host "PASS: fork latest release API, EXE download and SHA256 digest."
+      - name: Verify painted dark checkbox captions with native Windows GDI
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          $env:COMPACTRS_MOCK_LOG = "$env:RUNNER_TEMP\compactrs-caption-test.log"
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-dark-checkbox" -Wait -PassThru
+          if (Test-Path $env:COMPACTRS_MOCK_LOG) { Get-Content $env:COMPACTRS_MOCK_LOG }
+          if ($test.ExitCode -ne 0) { throw "Native checkbox paint regression failed ($($test.ExitCode))" }
+          Write-Host "PASS: actual Windows dark checkbox caption pixels, native check state, dark/light toggling."

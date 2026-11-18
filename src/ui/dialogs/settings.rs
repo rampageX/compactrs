@@ -915,7 +915,7 @@ impl WindowHandler for SettingsState {
                             if let Ok(exe) = std::env::current_exe() {
                                 let op = crate::utils::to_wstring("open"); 
                                 let path = crate::utils::to_wstring(exe.to_str().unwrap());
-                                ShellExecuteW(
+                                let result = ShellExecuteW(
                                     std::ptr::null_mut(),
                                     op.as_ptr(),
                                     path.as_ptr(),
@@ -923,7 +923,17 @@ impl WindowHandler for SettingsState {
                                     std::ptr::null(),
                                     SW_SHOWNORMAL
                                 );
-                                std::process::exit(0);
+                                if (result as isize) > 32 {
+                                    std::process::exit(0);
+                                }
+                                let rollback = crate::updater::rollback_after_restart_failure();
+                                Label::new(h_lbl).set_text(if rollback.is_ok() {
+                                    "Restart failed; original EXE restored."
+                                } else {
+                                    "Restart failed; .old backup retained. Restore manually."
+                                });
+                                Button::new(h_btn).set_text("Retry Update");
+                                Button::new(h_btn).set_enabled(true);
                             }
                         },
                         Err(e) => {
@@ -1082,9 +1092,20 @@ impl WindowHandler for SettingsState {
                                 let theme = match idx { 0 => AppTheme::System, 1 => AppTheme::Dark, 2 => AppTheme::Light, _ => AppTheme::System };
                                 let new_is_dark = match theme { AppTheme::Dark => true, AppTheme::Light => false, AppTheme::System => crate::ui::theme::is_system_dark_mode() };
                                 self.theme = theme; self.result = Some(theme); self.is_dark = new_is_dark;
+                                crate::ui::theme::set_preferred_app_mode(new_is_dark);
                                 crate::ui::theme::set_window_frame_theme(hwnd, new_is_dark);
+                                // Each tab is a custom panel owning its own WM_CTLCOLOR*
+                                // and WM_ERASEBKGND handlers; update *all* tab properties,
+                                // including hidden tabs, before applying child themes.
+                                for &panel in &self.tab_panels {
+                                    crate::ui::components::panel::Panel::update_theme(panel, new_is_dark);
+                                }
                                 crate::ui::theme::apply_theme_recursive(hwnd, new_is_dark);
-                                InvalidateRect(hwnd, std::ptr::null(), 1);
+                                // Redraw descendants immediately; hidden tabs will use the
+                                // new palette when they become visible.
+                                RedrawWindow(hwnd, std::ptr::null(), std::ptr::null_mut(),
+                                    0x0001 | 0x0004 | 0x0080 | 0x0100);
+
                                 
                                 use GetParent;
                                 let parent = GetParent(hwnd);
@@ -1208,10 +1229,12 @@ impl WindowHandler for SettingsState {
                                          Button::new(self.get_control(IDC_BTN_CHECK_UPDATE as i32)).set_text("Updating...");
                                          Label::new(self.get_control(IDC_LBL_UPDATE_STATUS as i32)).set_text("Downloading...");
                                          
-                                         let url = info.download_url.clone();
-                                         let hwnd_target = hwnd as usize; 
+                                         // Keep the signed release metadata alongside the
+                                         // URL; never trust a bare download URL for installation.
+                                         let verified_release = info.clone();
+                                         let hwnd_target = hwnd as usize;
                                          std::thread::spawn(move || {
-                                             let res = crate::updater::download_and_start_update(&url);
+                                             let res = crate::updater::download_and_start_update(&verified_release);
                                              let ptr = Box::into_raw(Box::new(res));
                                              crate::types::PostMessageW(hwnd_target as HWND, WM_APP_UPDATE_DOWNLOAD_RESULT, 0, ptr as LPARAM);
                                          });
