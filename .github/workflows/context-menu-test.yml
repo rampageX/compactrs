@@ -6,6 +6,7 @@ on:
     branches:
       - fix/explorer-single-uac-serial-dialog
       - feature/dark-selection-dialog-stack
+      - fix/fork-updater-dark-controls
   workflow_dispatch:
 
 permissions:
@@ -39,3 +40,10 @@ jobs:
       - name: Exercise Windows Explorer broker and Dialog serial queue
         shell: pwsh
         run: ./scripts/smoke-shell-broker.ps1
+      - name: Verify updater metadata, version ordering and real Windows SHA256
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          & $exe --selftest-updater
+          if ($LASTEXITCODE -ne 0) { throw "Updater self-test failed with exit code $LASTEXITCODE" }
+          Write-Host "PASS: fork updater parser, version ordering, and CryptoAPI SHA256."
