@@ -168,7 +168,11 @@ unsafe fn launch_as_admin(items: &[StartupItem]) -> bool {
     let exe_w = to_wstring(&exe.to_string_lossy());
     let args_w = to_wstring(&command);
     #[cfg(feature = "shell-broker-smoke")]
-    record_mock("UAC_LAUNCH");
+    {
+        record_mock("UAC_LAUNCH");
+        // Hold the request open across 20+ WM_TIMER ticks: repeated launches fail the test.
+        std::thread::sleep(Duration::from_secs(2));
+    }
     #[cfg(feature = "shell-broker-smoke")]
     let verb = crate::w!("open");
     #[cfg(not(feature = "shell-broker-smoke"))]
