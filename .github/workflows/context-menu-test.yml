@@ -20,6 +20,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
+      - name: Verify automatic Asia/Shanghai release version script
+        shell: pwsh
+        run: |
+          $time0 = [datetime]::SpecifyKind([datetime]::new(2026,11,18,13,45,0), [DateTimeKind]::Utc)
+          $result0 = & ./scripts/generate-release-version.ps1 -UtcNow $time0
+          if ($result0 -ne "v2026.11.18-r2145") { throw "Version test 0 failed: $result0" }
+          $time1 = [datetime]::SpecifyKind([datetime]::new(2026,11,18,16,5,0), [DateTimeKind]::Utc)
+          $result1 = & ./scripts/generate-release-version.ps1 -UtcNow $time1
+          if ($result1 -ne "v2026.11.19-r0005") { throw "Version test 1 failed: $result1" }
+          $time2 = [datetime]::SpecifyKind([datetime]::new(2026,5,10,6,15,0), [DateTimeKind]::Utc)
+          $result2 = & ./scripts/generate-release-version.ps1 -UtcNow $time2
+          if ($result2 -ne "v2026.5.10-r1415") { throw "Version test 2 failed: $result2" }
+          Write-Host "PASS: release timestamp UTC+8, calendar rollover, no leading-zero month."
       - name: Build test binary (no release, no UPX)
         shell: pwsh
         run: cargo +nightly build --release --target x86_64-pc-windows-msvc
