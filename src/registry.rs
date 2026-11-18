@@ -119,6 +119,9 @@ unsafe fn create_menu_for_root(root_path: &str, exe_path: &str) -> Result<(), St
         let item_path = submenu_base.clone() + "\\" + id;
         let item_key = create_key(HKEY_CLASSES_ROOT, &item_path)?;
         set_value(item_key, None, label)?;
+        // Keep the verb available for Explorer selections larger than 15 items.
+        // Static verbs still invoke per item; the app-side broker aggregates them.
+        set_value(item_key, Some("MultiSelectModel"), "Player")?;
         close_key(item_key);
         
         // Create the command key
