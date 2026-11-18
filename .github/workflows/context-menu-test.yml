@@ -1,5 +1,7 @@
 name: Explorer single-UAC / Dialog serial smoke test
 on:
+  pull_request:
+    branches: [main]
   push:
     branches:
       - fix/explorer-single-uac-serial-dialog
