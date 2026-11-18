@@ -881,6 +881,8 @@ impl AppState {
                      };
                      
                      if !self.batch_items.iter().any(|item| item.path == path) {
+                         #[cfg(feature = "shell-broker-smoke")]
+                         crate::shell_batch::record_mock(&format!("MAIN_ADD|{}", path));
                          self.ingest_paths(vec![path.clone()]);
                          
                          if let Some(pos) = self.batch_items.iter().position(|i| i.path == path) {
