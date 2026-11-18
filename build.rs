@@ -105,12 +105,8 @@ fn compile_resources() -> io::Result<()> {
     println!("cargo:rustc-link-arg=/ENTRY:WinMainCRTStartup");
     println!("cargo:rustc-link-arg=/SUBSYSTEM:WINDOWS");
     
-    // Explicitly link CRT libraries for symbols like memset
-    #[cfg(target_env = "msvc")]
-    {
-        println!("cargo:rustc-link-lib=vcruntime");
-        println!("cargo:rustc-link-lib=ucrt");
-    }
+    // Rust's target CRT selection owns the MSVC runtime linkage.
+    // Explicit vcruntime/ucrt import libs conflict with static CRT builds.
 
     // EXTREME Optimizations for Release Build
     if profile == "release" {
