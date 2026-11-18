@@ -14,6 +14,10 @@ readme = "README.md"
 keywords = ["windows", "compression", "wof", "compactos", "utility"]
 categories = ["os::windows-apis", "filesystem", "command-line-utilities"]
 
+[features]
+# CI-only: replaces UAC with a harmless mock launch for Explorer IPC smoke tests.
+shell-broker-smoke = []
+
 [dependencies]
 
 
