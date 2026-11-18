@@ -70,6 +70,7 @@ pub fn batch_process_worker(
     skip_extensions: String,
     set_compressed_attr: bool,
     process_hidden_files: bool,
+    send_finished: bool,
 ) {
     let _sleep_guard = ExecutionStateGuard::new();
     let _ = tx.send(UiMessage::StatusText(to_wstring("Discovering files...")));
@@ -248,14 +249,14 @@ pub fn batch_process_worker(
 
     if state.load(Ordering::Relaxed) == ProcessingState::Stopped as u8 {
         let _ = tx.send(UiMessage::StatusText(to_wstring("Cancelled.")));
-        let _ = tx.send(UiMessage::Finished);
+        if send_finished { let _ = tx.send(UiMessage::Finished); }
         return;
     }
 
     let g_cur = global_current.load(Ordering::Relaxed);
     let g_tot = global_total.load(Ordering::Relaxed);
     let _ = tx.send(UiMessage::Progress(g_cur, g_tot));
-    if g_cur >= g_tot {
+    if send_finished && g_cur >= g_tot {
         let _ = tx.send(UiMessage::Finished);
     }
 }
