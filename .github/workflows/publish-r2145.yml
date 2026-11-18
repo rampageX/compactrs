@@ -10,7 +10,7 @@ permissions:
 jobs:
   publish-once:
     # Only the user-approved PR #2 merge may trigger this release.
-    if: startsWith(github.event.head_commit.message, 'release: v2026.11.18-r2145 [publish-r2145]')
+    if: "${{ startsWith(github.event.head_commit.message, 'release: v2026.11.18-r2145 [publish-r2145]') }}"
     runs-on: windows-2022
     env:
       RELEASE_VERSION: v2026.11.18-r2145
