@@ -1219,10 +1219,12 @@ impl WindowHandler for SettingsState {
                                          Button::new(self.get_control(IDC_BTN_CHECK_UPDATE as i32)).set_text("Updating...");
                                          Label::new(self.get_control(IDC_LBL_UPDATE_STATUS as i32)).set_text("Downloading...");
                                          
-                                         let url = info.download_url.clone();
-                                         let hwnd_target = hwnd as usize; 
+                                         // Keep the signed release metadata alongside the
+                                         // URL; never trust a bare download URL for installation.
+                                         let verified_release = info.clone();
+                                         let hwnd_target = hwnd as usize;
                                          std::thread::spawn(move || {
-                                             let res = crate::updater::download_and_start_update(&url);
+                                             let res = crate::updater::download_and_start_update(&verified_release);
                                              let ptr = Box::into_raw(Box::new(res));
                                              crate::types::PostMessageW(hwnd_target as HWND, WM_APP_UPDATE_DOWNLOAD_RESULT, 0, ptr as LPARAM);
                                          });
