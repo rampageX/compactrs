@@ -43,7 +43,7 @@ pub unsafe fn show_console_window(app_state: &mut AppState, parent: HWND, is_dar
         return;
     }
 
-    let bg_brush = (COLOR_WINDOW + 1) as HBRUSH;
+    let bg_brush = crate::ui::theme::get_background_brush(is_dark);
     
     let mut history = VecDeque::with_capacity(MAX_HISTORY);
     history.extend(app_state.logs.iter().cloned());
@@ -175,13 +175,15 @@ impl WindowHandler for ConsoleState {
              let list_cls = to_wstring("SysListView32");
              
              // Create Virtual ListView
-             let lvs_nosortheader = 0x8000;
+             // 0x4000 is LVS_NOCOLUMNHEADER. 0x8000 was LVS_NOSORTHEADER,
+             // which left an empty white native column header above the log.
+             let lvs_no_column_header = 0x4000;
              let list = CreateWindowExW(
                  0,
                  list_cls.as_ptr(),
                  std::ptr::null_mut(),
                  WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | 
-                 (LVS_REPORT as u32) | (LVS_SINGLESEL as u32) | (LVS_OWNERDATA as u32) | lvs_nosortheader,
+                 (LVS_REPORT as u32) | (LVS_SINGLESEL as u32) | (LVS_OWNERDATA as u32) | lvs_no_column_header,
                  0, 0, 0, 0,
                  hwnd,
                  IDC_EDIT_CONSOLE as isize as HMENU,
