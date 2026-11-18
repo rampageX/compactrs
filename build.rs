@@ -105,8 +105,13 @@ fn compile_resources() -> io::Result<()> {
     println!("cargo:rustc-link-arg=/ENTRY:WinMainCRTStartup");
     println!("cargo:rustc-link-arg=/SUBSYSTEM:WINDOWS");
     
-    // Rust's target CRT selection owns the MSVC runtime linkage.
-    // Explicit vcruntime/ucrt import libs conflict with static CRT builds.
+    // Rust's custom no_main startup requires explicit MSVC runtime support.
+    // With +crt-static, link the static implementation libraries, not DLL import libs.
+    #[cfg(target_env = "msvc")]
+    {
+        println!("cargo:rustc-link-lib=libvcruntime");
+        println!("cargo:rustc-link-lib=libucrt");
+    }
 
     // EXTREME Optimizations for Release Build
     if profile == "release" {
