@@ -162,6 +162,10 @@ fn is_admin() -> bool {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn WinMainCRTStartup() {
+    #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-updater-live") {
+        ExitProcess(if crate::updater::updater_live_selftest().is_ok() { 0 } else { 3 });
+    }
     // A headless, CI-only validation of our update security checks. This
     // branch is absent from production binaries.
     #[cfg(feature = "shell-broker-smoke")]
