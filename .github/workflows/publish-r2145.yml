@@ -1,0 +1,18 @@
+name: Publish accepted CompactRS v2026.11.18-r2145
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  accepted-release:
+    # Never publish for an arbitrary push: only the explicitly named,
+    # manually approved merge commit can trigger this one-shot workflow.
+    if: github.event.head_commit.message == 'release: v2026.11.18-r2145 [publish-r2145]'
+    uses: ./.github/workflows/release.yml
+    with:
+      version: v2026.11.18-r2145
+    secrets: inherit
