@@ -71,6 +71,9 @@ try {
         }
         if (!$ready) {
             $lines = if (Test-Path $trace) { @(Get-Content $trace) } else { @() }
+            $procsNow = @(Get-Candidates $exe)
+            Write-Host "DEBUG hwnd=$([CompactRSWin]::FindWindowW($windowClass, $null)); pid count=$($procsNow.Count)"
+            foreach ($p in $procsNow) { Write-Host "DEBUG PID=$($p.ProcessId) command=$($p.CommandLine)" }
             throw "Timeout ($mode): expected one broker, one simulated UAC, correct routing and a GUI. TRACE: $($lines -join ' | ')"
         }
 
@@ -78,7 +81,7 @@ try {
         Start-Sleep -Seconds 4
         $procs = @(Get-Candidates $exe)
         if ($procs.Count -ne 1) {
-            $detail = @($procs | ForEach-Object { "${($_.ProcessId)}: $($_.CommandLine)" })
+            $detail = @($procs | ForEach-Object { "$($_.ProcessId): $($_.CommandLine)" })
             throw "Process leak in $mode : expected 1 active GUI, found $($procs.Count). $($detail -join ' | ')"
         }
         Write-Host "PASS: $mode; one simulated UAC, one broker, one GUI process, both paths delivered."
