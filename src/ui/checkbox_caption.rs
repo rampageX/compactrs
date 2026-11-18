@@ -111,3 +111,59 @@ pub unsafe fn apply(hwnd: HWND, is_dark: bool) {
     );
     InvalidateRect(hwnd, ptr::null(), 1);
 }
+
+#[cfg(feature = "shell-broker-smoke")]
+pub unsafe fn verify_dark_caption_pixels() -> bool {
+    // This is a real native Windows GDI paint test, not a unit test that merely
+    // checks our chosen foreground constant. It runs on windows-2022 CI.
+    #[link(name = "gdi32")]
+    unsafe extern "system" {
+        fn GetPixel(hdc: HDC, x: i32, y: i32) -> u32;
+    }
+    let parent = CreateWindowExW(
+        0, crate::w!("STATIC").as_ptr(), crate::w!("").as_ptr(),
+        WS_POPUP | WS_VISIBLE,
+        100, 100, 340, 120, ptr::null_mut(), ptr::null_mut(),
+        GetModuleHandleW(ptr::null()), ptr::null_mut(),
+    );
+    if parent.is_null() { return false; }
+    let child = crate::ui::builder::ControlBuilder::new(parent, 5001)
+        .checkbox().text("Case Sensitive").dark_mode(true)
+        .pos(12, 15).size(245, 32).build();
+    if child.is_null() {
+        DestroyWindow(parent);
+        return false;
+    }
+
+    SendMessageW(child, BM_SETCHECK, 1, 0);
+    let toggled = SendMessageW(child, BM_GETCHECK, 0, 0) == 1;
+    InvalidateRect(child, ptr::null(), 1);
+    UpdateWindow(child);
+
+    // Scan only the CAPTION rectangle. A dark native caption contains almost
+    // no bright pixels; our explicit pale gray text produces hundreds.
+    let dc = GetDC(child);
+    let mut bright = 0usize;
+    if !dc.is_null() {
+        for y in 0..32 {
+            for x in 22..200 {
+                let c = GetPixel(dc, x, y);
+                if c != u32::MAX && (c & 0xff) >= 170
+                    && ((c >> 8) & 0xff) >= 170 && ((c >> 16) & 0xff) >= 170 {
+                    bright += 1;
+                }
+            }
+        }
+        ReleaseDC(child, dc);
+    }
+    crate::shell_batch::record_mock(&format!("DARK_CHECKBOX_BRIGHT_PIXELS|{}",bright));
+
+    // Verify theme changes can reach the same existing checkbox HWND.
+    crate::ui::theme::apply_theme(child, crate::ui::theme::ControlType::CheckBox, false);
+    UpdateWindow(child);
+    crate::ui::theme::apply_theme(child, crate::ui::theme::ControlType::CheckBox, true);
+    UpdateWindow(child);
+    let state_after_switch = SendMessageW(child, BM_GETCHECK, 0, 0) == 1;
+    DestroyWindow(parent);
+    toggled && state_after_switch && bright >= 30
+}
