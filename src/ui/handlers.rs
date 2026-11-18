@@ -204,7 +204,7 @@ pub unsafe fn start_processing_internal(st: &mut AppState, hwnd: HWND, indices_t
         let global_tot = st.global_progress_total.clone();
 
         thread::spawn(move || {
-            batch_process_worker(items, tx, state_global, force, main_hwnd_usize, guard, low_power, max_threads, global_cur, global_tot, enable_skip, skip_list, set_attr, process_hidden);
+            batch_process_worker(items, tx, state_global, force, main_hwnd_usize, guard, low_power, max_threads, global_cur, global_tot, enable_skip, skip_list, set_attr, process_hidden, true);
         });
     }
 }
