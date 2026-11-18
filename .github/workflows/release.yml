@@ -1,251 +1,122 @@
 name: Build and Release
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag, e.g. v2026.11.18-r2145"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 permissions:
   contents: write
-  id-token: write
-
-env:
-  CARGO_TERM_COLOR: always
-  BINARY_NAME: compactrs
 
 jobs:
-  build:
-    name: Build and Release
-    runs-on: windows-latest
-    
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2022
     steps:
-      - name: Checkout repository
+      - name: Checkout verified main commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Check latest UPX version
-        id: upx-version
+      - name: Validate explicit tag and refuse duplicate
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $fallbackVersion = "v5.0.2"
-          try {
-              $headers = @{ "Authorization" = "token $env:GITHUB_TOKEN" }
-              $response = Invoke-RestMethod -Uri "https://api.github.com/repos/upx/upx/releases/latest" -Headers $headers -ErrorAction Stop
-              $latest = $response.tag_name
-              if ([string]::IsNullOrWhiteSpace($latest)) { throw "Empty tag name returned" }
-          } catch {
-              Write-Warning "GitHub API Request Failed: $_"
-              Write-Warning "Rate limit might be exceeded or API is down."
-              Write-Warning "Using fallback version: $fallbackVersion"
-              $latest = $fallbackVersion
+          if ($env:RELEASE_VERSION -notmatch '^v\d{4}\.\d{1,2}\.\d{1,2}-r\d{4}$') {
+            throw "Invalid release version: $env:RELEASE_VERSION"
           }
-          $version = $latest -replace '^v', ''
-          echo "UPX_VERSION=$version" >> $env:GITHUB_ENV
-          Write-Host "Selected UPX version: $version"
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_VERSION"
+          $response = Invoke-WebRequest -Uri $uri -Headers @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "CompactRS-Release-CI"
+          } -SkipHttpErrorCheck
+          if ($response.StatusCode -ne 404) {
+            throw "Release already exists or lookup failed (HTTP $($response.StatusCode)); refusing to overwrite."
+          }
+          Write-Host "Confirmed new release: $env:RELEASE_VERSION"
+
+      - name: Build Windows x64 (static CRT; no UPX)
         shell: pwsh
-
-      - name: Cache UPX
-        id: cache-upx
-        uses: actions/cache@v4
-        with:
-          path: upx.exe
-          key: upx-${{ env.UPX_VERSION }}-windows
-
-      - name: Download UPX
-        if: steps.cache-upx.outputs.cache-hit != 'true'
-        run: |
-          $upxUrl = "https://github.com/upx/upx/releases/download/v${{ env.UPX_VERSION }}/upx-${{ env.UPX_VERSION }}-win64.zip"
-          Invoke-WebRequest -Uri $upxUrl -OutFile upx.zip
-          Expand-Archive -Path upx.zip -DestinationPath .
-          Move-Item "upx-${{ env.UPX_VERSION }}-win64/upx.exe" .
-        shell: pwsh
-
-      - name: Calculate Version
-        id: version
-        run: |
-          $version = Get-Date -Format "vyyyy.M.d-rHHmm"
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-          Write-Host "Determined Version: $version"
-        shell: pwsh
-
-      - name: Update Cargo.toml version
-        run: |
-          $ver = "${{ steps.version.outputs.VERSION }}" -replace '^v',''
-          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$ver`"" | Set-Content Cargo.toml
-        shell: pwsh
-
-      - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-
-      # Build configuration is in .cargo/config.toml
-      # See config.toml for all optimization flags and documentation
-      - name: Build release binary
+        env:
+          APP_VERSION: ${{ inputs.version }}
+          RUSTFLAGS: "-C target-feature=+crt-static"
         run: |
           cargo +nightly build --release --target x86_64-pc-windows-msvc
-          Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.BINARY_NAME }}.exe" "target/release/${{ env.BINARY_NAME }}.exe"
-          Copy-Item "target/release/${{ env.BINARY_NAME }}.exe" "target/release/${{ env.BINARY_NAME }}-normal.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/compactrs.exe dist/compactrs.exe
+          if ((Get-Item dist/compactrs.exe).Length -lt 100000) {
+            throw "Unexpectedly small binary; aborting release"
+          }
+
+      - name: Write change notes and SHA256
         shell: pwsh
         env:
-          APP_VERSION: ${{ steps.version.outputs.VERSION }}
-
-      - name: Compress binary with UPX
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          $originalSize = (Get-Item "target/release/${{ env.BINARY_NAME }}.exe").Length
-          ./upx.exe --ultra-brute "target/release/${{ env.BINARY_NAME }}.exe"
-          $compressedSize = (Get-Item "target/release/${{ env.BINARY_NAME }}.exe").Length
-          $ratio = [math]::Round(($compressedSize / $originalSize) * 100, 2)
-          Write-Host "Original: $([math]::Round($originalSize / 1KB, 2)) KB"
-          Write-Host "Compressed: $([math]::Round($compressedSize / 1KB, 2)) KB"
-          Write-Host "Compression ratio: $ratio%"
-        shell: pwsh
+          $hash = (Get-FileHash dist/compactrs.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = [math]::Round((Get-Item dist/compactrs.exe).Length / 1KB, 1)
+          $commit = $env:GITHUB_SHA
+          $notes = @"
+          # CompactRS $env:RELEASE_VERSION
 
-      - name: VirusTotal Upload
-        id: virustotal
-        run: |
-          $files = @(
-            @{ Type="NORMAL"; Path="target/release/${{ env.BINARY_NAME }}-normal.exe"; Description="Normal (Uncompressed)" },
-            @{ Type="UPX"; Path="target/release/${{ env.BINARY_NAME }}.exe"; Description="UPX Compressed" }
-          )
-          
-          $vtApiKey = "${{ secrets.VIRUSTOTAL_API_KEY }}"
-          
-          foreach ($file in $files) {
-            $filePath = $file.Path
-            $type = $file.Type
-            
-            # SHA256 hash
-            $fileHash = (Get-FileHash $filePath -Algorithm SHA256).Hash.ToLower()
-            $vtPermalink = "https://www.virustotal.com/gui/file/$fileHash"
-            
-            Write-Host "[$($file.Description)] SHA256: $fileHash"
-            Write-Host "[$($file.Description)] VirusTotal: $vtPermalink"
-            
-            echo "VT_LINK_${type}=$vtPermalink" >> $env:GITHUB_OUTPUT
-            echo "VT_HASH_${type}=$fileHash" >> $env:GITHUB_OUTPUT
-            
-            if ([string]::IsNullOrEmpty($vtApiKey)) {
-               Write-Host "::notice::VIRUSTOTAL_API_KEY not set. Link is still valid for $type once file is scanned."
-               continue
-            }
-            
-            Write-Host "Uploading $($file.Description) to VirusTotal..."
-            $result = curl.exe --silent --show-error `
-              -X POST "https://www.virustotal.com/api/v3/files" `
-              -H "x-apikey: $vtApiKey" `
-              -F "file=@$filePath"
-            
-            Write-Host "Response: $result"
-          }
-        shell: pwsh
+          Windows x64 portable WOF directory compressor — rampageX fork.
 
-      - name: Generate Changelog
-        id: info
-        run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-          
-          $shortSha = "${{ github.sha }}".Substring(0, 7)
-          
-          $commitMsg = git log -1 --pretty=format:"%s"
-          # Get commit body and preserve newlines
-          $commitBodyRaw = git log -1 --pretty=format:"%b"
-          $author = git log -1 --pretty=format:"%an"
-          
-          # Convert commit body lines to proper markdown list
-          $commitBodyLines = $commitBodyRaw -split "`n" | Where-Object { $_.Trim() -ne "" }
-          $commitBody = ""
-          foreach ($line in $commitBodyLines) {
-            $trimmedLine = $line.Trim()
-            if ($trimmedLine -match "^[-*]") {
-              # Already a list item, ensure proper markdown format
-              $trimmedLine = $trimmedLine -replace "^[-*]\s*", ""
-              $commitBody += "- $trimmedLine`n"
-            } else {
-              $commitBody += "$trimmedLine`n"
-            }
-          }
-          
-          $hash_upx = "${{ steps.virustotal.outputs.VT_HASH_UPX }}"
-          $hash_normal = "${{ steps.virustotal.outputs.VT_HASH_NORMAL }}"
-          $size_upx = [math]::Round((Get-Item "target/release/${{ env.BINARY_NAME }}.exe").Length / 1KB, 2)
-          $size_normal = [math]::Round((Get-Item "target/release/${{ env.BINARY_NAME }}-normal.exe").Length / 1KB, 2)
-          
-          $vtLink_upx = "${{ steps.virustotal.outputs.VT_LINK_UPX }}"
-          $vtLink_normal = "${{ steps.virustotal.outputs.VT_LINK_NORMAL }}"
-          
-          $sb = [System.Text.StringBuilder]::new()
-          [void]$sb.AppendLine("## Security Verification")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("| Build Type | Size | SHA256 | VirusTotal |")
-          [void]$sb.AppendLine("|---|---|---|---|")
-          [void]$sb.AppendLine("| **Normal** | $size_normal KB | ``$hash_normal`` | [Scan Result]($vtLink_normal) |")
-          [void]$sb.AppendLine("| **UPX** | $size_upx KB | ``$hash_upx`` | [Scan Result]($vtLink_upx) |")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("> **Note**: UPX-compressed binaries may trigger false positives in some antivirus engines. Compare with the Normal build to verify.")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("---")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("## Changes")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("**$commitMsg**")
-          [void]$sb.AppendLine("")
-          [void]$sb.Append($commitBody)
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("## Build Information")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("- **Commit:** ``${{ github.sha }}``")
-          [void]$sb.AppendLine("- **Author:** $author")
-          [void]$sb.AppendLine("- **Platform:** Windows x64")
-          [void]$sb.AppendLine("- **Rust Toolchain:** Nightly")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("## Installation")
-          [void]$sb.AppendLine("")
-          [void]$sb.AppendLine("1. Download ``compactrs.exe`` from assets below")
-          [void]$sb.AppendLine("2. Run as Administrator (required for WOF compression)")
-          [void]$sb.AppendLine("3. Drag and drop files or folders to compress")
-          [void]$sb.AppendLine("")
-          
-          $sb.ToString() | Out-File -FilePath changelog.md -Encoding utf8
-        shell: pwsh
+          ## Changes
+          - Explorer multi-folder selection now prompts for UAC only once; prevents recursive elevation and process storms.
+          - Normal mode consolidates selected directories into a single processing queue.
+          - Dialog mode consolidates multiple folders into one window and processes them serially (multithreading within an individual folder remains enabled).
+          - Dialog progress history stacks up to five recent folder results, with a top ellipsis for older results.
+          - Dark selection highlights for the main file queue and no white header strip in Debug Console.
+          - Windows process-level regression tests cover simulated UAC, IPC handoff and serial execution for 2 and 7 folders.
 
-      - name: Create Release
+          ## Download
+          - compactrs.exe: Windows x64 executable, normal/uncompressed (no UPX).
+
+          ## Validation
+          - Windows 11 functionality and UI: user-tested and approved.
+          - Windows Server 2022 / Rust nightly: release build and mock UAC/process regression passed.
+          - Real Windows UAC cannot be interacted with in GitHub hosted CI.
+
+          Build commit: $commit
+          Size: $size KiB
+          SHA256: $hash
+
+          Installation: Replace the old executable at the same path; retain compactrs.dat.
+          "@
+          $notes | Set-Content -Path dist/RELEASE_NOTES.md -Encoding utf8
+          Write-Host "SHA256 $hash"
+
+      - name: Create public GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: CompactRS ${{ steps.info.outputs.VERSION }}
-          tag_name: ${{ steps.info.outputs.VERSION }}
-          body_path: changelog.md
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: CompactRS ${{ inputs.version }}
+          body_path: dist/RELEASE_NOTES.md
+          make_latest: true
           draft: false
           prerelease: false
-          make_latest: true
-          files: |
-            target/release/${{ env.BINARY_NAME }}.exe
-            target/release/${{ env.BINARY_NAME }}-normal.exe
-          token: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/compactrs.exe
+          fail_on_unmatched_files: true
 
-      - name: Publish to crates.io
-        run: cargo publish --allow-dirty
-        shell: pwsh
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-
-      - name: Upload artifact
+      - name: Archive executable from exact release build
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BINARY_NAME }}-windows-x64
-          path: |
-             target/release/${{ env.BINARY_NAME }}.exe
-             target/release/${{ env.BINARY_NAME }}-normal.exe
-          retention-days: 30
+          name: compactrs-windows-x64
+          path: dist/compactrs.exe
+          if-no-files-found: error

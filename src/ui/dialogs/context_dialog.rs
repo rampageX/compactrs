@@ -6,7 +6,8 @@ use crate::ui::controls::apply_button_theme;
 use crate::ui::layout::{LayoutNode, SizePolicy};
 use crate::config::AppConfig;
 use crate::StartupItem;
-use std::sync::{Arc, atomic::{AtomicU8, AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicU8, AtomicU64, AtomicU32, Ordering}};
+use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::time::Instant;
 use crate::ui::state::{UiMessage, ProcessingState, BatchAction};
@@ -22,6 +23,8 @@ const IDC_BTN_CANCEL: u16 = 105;
 
 pub struct ContextDialogState {
     pub items: Vec<StartupItem>,
+    pub pending: Arc<Mutex<VecDeque<StartupItem>>>,
+    pub next_id: Arc<AtomicU32>,
     pub config: AppConfig,
     pub tx: Sender<UiMessage>,
     pub rx: Receiver<UiMessage>,
@@ -47,6 +50,8 @@ pub unsafe fn show(items: Vec<StartupItem>, config: AppConfig) {
     
     let (tx, rx) = channel();
     let mut state = ContextDialogState {
+        pending: Arc::new(Mutex::new(items.iter().cloned().collect())),
+        next_id: Arc::new(AtomicU32::new(1)),
         items,
         config,
         tx,
@@ -78,6 +83,8 @@ pub unsafe fn show(items: Vec<StartupItem>, config: AppConfig) {
         .build(std::ptr::null_mut());
         
     if let Ok(hwnd) = hwnd_res {
+        #[cfg(feature = "shell-broker-smoke")]
+        crate::shell_batch::record_mock(&format!("DIALOG_CREATED|{:x}", hwnd as usize));
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             if IsDialogMessageW(hwnd, &msg) == 0 {
@@ -89,6 +96,71 @@ pub unsafe fn show(items: Vec<StartupItem>, config: AppConfig) {
 }
 
 impl ContextDialogState {
+    /// One directory at a time. Parallel worker threads are kept *within* that directory.
+    unsafe fn spawn_processing(&mut self, hwnd: HWND) {
+        if self.pending.lock().map_or(true, |items| items.is_empty()) { return; }
+
+        self.global_state.store(ProcessingState::Running as u8, Ordering::Relaxed);
+        self.start_time = Instant::now();
+        crate::ui::wrappers::Button::new(self.hwnd_cancel).set_text("Cancel");
+        crate::ui::wrappers::Button::new(self.hwnd_cancel).set_enabled(true);
+
+        let tx = self.tx.clone();
+        let state = self.global_state.clone();
+        let queue = self.pending.clone();
+        let next_id = self.next_id.clone();
+        let current = self.global_current.clone();
+        let total = self.global_total.clone();
+        let force = self.config.force_compress;
+        let guard = self.config.enable_system_guard;
+        let low_power = self.config.low_power_mode;
+        let max_threads = self.config.max_threads;
+        let enable_skip = self.config.enable_skip_heuristics;
+        let skip_ext = String::from_utf16_lossy(&self.config.skip_extensions_buf).trim_matches('\0').to_string();
+        let set_attr = self.config.set_compressed_attr;
+        let process_hidden = self.config.process_hidden_files;
+        let hwnd_usize = hwnd as usize;
+
+        std::thread::spawn(move || {
+            loop {
+                if state.load(Ordering::Relaxed) == ProcessingState::Stopped as u8 { break; }
+                let next = queue.lock().ok().and_then(|mut jobs| jobs.pop_front());
+                let item = match next {
+                    Some(item) => item,
+                    None => {
+                        // Allow any final Explorer invocations to join before the batch ends.
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        match queue.lock().ok().and_then(|mut jobs| jobs.pop_front()) {
+                            Some(item) => item,
+                            None => break,
+                        }
+                    }
+                };
+                let id = next_id.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "shell-broker-smoke")]
+                crate::shell_batch::record_mock(&format!("START|{}", item.path));
+                #[cfg(feature = "shell-broker-smoke")]
+                let mock_path = item.path.clone();
+                let _ = tx.send(UiMessage::ContextPath(item.path.clone()));
+                crate::engine::scanner::scan_path_streaming(
+                    id, &item.path, tx.clone(), Some(&state), process_hidden
+                );
+                if state.load(Ordering::Relaxed) == ProcessingState::Stopped as u8 { break; }
+
+                crate::engine::worker::batch_process_worker(
+                    vec![(item.path, item.action, id, item.algorithm)],
+                    tx.clone(), state.clone(), force, hwnd_usize, guard, low_power,
+                    max_threads, current.clone(), total.clone(), enable_skip,
+                    skip_ext.clone(), set_attr, process_hidden,
+                    false // Only the encompassing serial batch emits Finished.
+                );
+                #[cfg(feature = "shell-broker-smoke")]
+                crate::shell_batch::record_mock(&format!("DONE|{}", mock_path));
+            }
+            let _ = tx.send(UiMessage::Finished);
+        });
+    }
+
     unsafe fn update_stats_label(&self) {
         let mut total_logical = 0;
         let mut total_disk = 0;
@@ -154,6 +226,8 @@ impl WindowHandler for ContextDialogState {
         unsafe {
             crate::ui::theme::set_window_frame_theme(hwnd, self.is_dark);
             self.taskbar = Some(TaskbarProgress::new(hwnd));
+            // Permit the unelevated Explorer broker to add late arrivals.
+            ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, std::ptr::null_mut());
             
             let font = crate::ui::theme::get_app_font();
             
@@ -190,44 +264,7 @@ impl WindowHandler for ContextDialogState {
             
             self.start_time = Instant::now();
             
-            let tx = self.tx.clone();
-            let state = self.global_state.clone();
-            let items = self.items.clone();
-            
-            let force = self.config.force_compress;
-            let guard = self.config.enable_system_guard;
-            let low_power = self.config.low_power_mode;
-            let max_threads = self.config.max_threads;
-            let enable_skip = self.config.enable_skip_heuristics;
-            let skip_ext = String::from_utf16_lossy(&self.config.skip_extensions_buf).trim_matches('\0').to_string();
-            let set_attr = self.config.set_compressed_attr;
-            let process_hidden = self.config.process_hidden_files; // Extract process_hidden_files from config
-            let global_current = self.global_current.clone();
-            let global_total = self.global_total.clone();
-            
-            let hwnd_usize = hwnd as usize;
-            
-            self.global_state.store(ProcessingState::Running as u8, Ordering::Relaxed);
-            
-            std::thread::spawn(move || {
-                for (i, item) in items.iter().enumerate() {
-                    let id = (i + 1) as u32;
-                    crate::engine::scanner::scan_path_streaming(id, &item.path, tx.clone(), Some(&state), process_hidden);
-                }
-                
-                if state.load(Ordering::Relaxed) == ProcessingState::Stopped as u8 {
-                    return;
-                }
-
-                let items_for_worker = items.iter().enumerate().map(|(i, item)| {
-                    (item.path.clone(), item.action, (i + 1) as u32, item.algorithm)
-                }).collect();
-                
-                crate::engine::worker::batch_process_worker(
-                    items_for_worker, tx, state, force, hwnd_usize, guard, low_power, max_threads,
-                    global_current, global_total, enable_skip, skip_ext, set_attr, process_hidden
-                );
-            });
+            self.spawn_processing(hwnd);
         }
         0
     }
@@ -246,6 +283,10 @@ impl WindowHandler for ContextDialogState {
                                     let count_w = crate::utils::u64_to_wstring(count);
                                     let status_w = crate::utils::concat_wstrings(&[crate::w!("Scanning... "), &count_w, crate::w!(" files")]);
                                     crate::ui::wrappers::Label::new(self.hwnd_status).set_text_w(&status_w);
+                                },
+                                UiMessage::ContextPath(path) => {
+                                    crate::ui::wrappers::Label::new(self.hwnd_path)
+                                        .set_text_w(&crate::utils::to_wstring(&path));
                                 },
                                 UiMessage::Progress(cur, tot) => {
                                     let pb = crate::ui::wrappers::ProgressBar::new(self.hwnd_progress);
@@ -277,6 +318,13 @@ impl WindowHandler for ContextDialogState {
                                     crate::ui::wrappers::Label::new(self.hwnd_status).set_text_w(&w_str);
                                 },
                                 UiMessage::Finished => {
+                                    let cancelled = self.global_state.load(Ordering::Relaxed)
+                                        == ProcessingState::Stopped as u8;
+                                    let more_queued = self.pending.lock().map_or(false, |q| !q.is_empty());
+                                    if !cancelled && more_queued {
+                                        self.spawn_processing(hwnd);
+                                        continue;
+                                    }
                                     self.global_state.store(ProcessingState::Idle as u8, Ordering::Relaxed);
                                     
                                     let elapsed_secs = self.start_time.elapsed().as_secs();
@@ -284,9 +332,13 @@ impl WindowHandler for ContextDialogState {
                                     
                                     let secs_w = crate::utils::u64_to_wstring(elapsed_secs);
                                     let tot_w = crate::utils::u64_to_wstring(total_files);
-                                    let final_msg = crate::utils::concat_wstrings(&[
-                                        crate::w!("Finished in "), &secs_w, crate::w!("s ("), &tot_w, crate::w!(" files)")
-                                    ]);
+                                    let final_msg = if cancelled {
+                                        crate::utils::to_wstring("Cancelled.")
+                                    } else {
+                                        crate::utils::concat_wstrings(&[
+                                            crate::w!("Finished in "), &secs_w, crate::w!("s ("), &tot_w, crate::w!(" files)")
+                                        ])
+                                    };
                                     
                                     crate::ui::wrappers::Label::new(self.hwnd_status).set_text_w(&final_msg);
                                     crate::ui::wrappers::Button::new(self.hwnd_cancel).set_text("Close");
@@ -299,6 +351,31 @@ impl WindowHandler for ContextDialogState {
                         }
                     }
                     Some(0)
+                },
+                WM_COPYDATA => {
+                    if self.global_state.load(Ordering::Relaxed) == ProcessingState::Stopped as u8 {
+                        return Some(0);
+                    }
+                    if let Some(item) = crate::shell_batch::decode_copydata(_lparam) {
+                        // Coalesce repeats of the same shell selection.
+                        if !self.items.iter().any(|old| old.path == item.path
+                            && old.algorithm == item.algorithm && old.action == item.action) {
+                            if self.global_state.load(Ordering::Relaxed) == ProcessingState::Idle as u8 {
+                                self.items.clear();
+                                self.item_metrics.clear();
+                                self.global_current.store(0, Ordering::Relaxed);
+                                self.global_total.store(0, Ordering::Relaxed);
+                            }
+                            self.items.push(item.clone());
+                            if let Ok(mut q) = self.pending.lock() { q.push_back(item); }
+                            if self.global_state.load(Ordering::Relaxed) == ProcessingState::Idle as u8 {
+                                self.spawn_processing(hwnd);
+                            }
+                        }
+                        Some(1)
+                    } else {
+                        Some(0)
+                    }
                 },
                 WM_COMMAND => {
                     let id = (wparam & 0xFFFF) as u16;

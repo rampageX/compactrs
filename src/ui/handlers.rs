@@ -120,6 +120,19 @@ pub unsafe fn on_process_all(st: &mut AppState, hwnd: HWND, is_auto_start: bool)
 pub unsafe fn start_processing(st: &mut AppState, hwnd: HWND, mut indices_to_process: Vec<usize>) {
     if indices_to_process.is_empty() { return; }
 
+    // Explorer can deliver another selected folder after processing has begun.
+    // Queue it behind the current batch rather than starting a competing worker.
+    let running = st.global_state.load(std::sync::atomic::Ordering::Relaxed);
+    if running == ProcessingState::Running as u8 || running == ProcessingState::Paused as u8 {
+        for idx in indices_to_process {
+            if st.batch_items.get(idx).map_or(false, |i| i.status == BatchStatus::Pending)
+                && !st.processing_queue.contains(&idx) {
+                st.processing_queue.push(idx);
+            }
+        }
+        return;
+    }
+
     st.active_lock_dialog = None;
     st.ignored_lock_processes.clear();
 
@@ -204,7 +217,7 @@ pub unsafe fn start_processing_internal(st: &mut AppState, hwnd: HWND, indices_t
         let global_tot = st.global_progress_total.clone();
 
         thread::spawn(move || {
-            batch_process_worker(items, tx, state_global, force, main_hwnd_usize, guard, low_power, max_threads, global_cur, global_tot, enable_skip, skip_list, set_attr, process_hidden);
+            batch_process_worker(items, tx, state_global, force, main_hwnd_usize, guard, low_power, max_threads, global_cur, global_tot, enable_skip, skip_list, set_attr, process_hidden, true);
         });
     }
 }

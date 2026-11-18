@@ -80,6 +80,7 @@ pub mod ui;
 pub mod engine;
 pub mod config;
 pub mod registry;
+pub mod shell_batch;
 pub mod utils;
 pub mod updater;
 pub mod watcher_config;
@@ -165,12 +166,49 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     crate::ui::theme::init();
     crate::ui::theme::set_preferred_app_mode(true);
 
-    let config = crate::config::AppConfig::load();
+    let mut config = crate::config::AppConfig::load();
+    #[cfg(feature = "shell-broker-smoke")]
+    {
+        config.context_menu_dialog_only = std::env::var("COMPACTRS_TEST_DIALOG")
+            .map(|v| v == "1").unwrap_or(false);
+        config.enable_context_menu = false;
+    }
     crate::ui::theme::update_ui_scale(config.ui_scale_multiplier);
 
-    // Parse CLI arguments
+    // Parse CLI arguments.
+    // A one-way elevation marker prevents an incorrect token check or a failed
+    // UAC handoff from recursively producing unlimited prompts/processes.
+    let elevation_requested = std::env::args().any(|arg| arg == "--elevated-once");
+    if elevation_requested && !is_admin() {
+        MessageBoxW(
+            ptr::null_mut(),
+            w!("CompactRS could not obtain administrator privileges. Elevation was attempted once; no further UAC requests will be made.").as_ptr(),
+            w!("CompactRS - Elevation Failed").as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+        ExitProcess(1);
+    }
+
     let startup_items = parse_cli_args();
+    // Explorer calls static verbs once per selection; collect before requesting UAC.
+    // The executable manifest is asInvoker so these short-lived processes stay unelevated.
+    if !startup_items.is_empty()
+        && (!is_admin() || (cfg!(feature = "shell-broker-smoke") && !elevation_requested))
+    {
+        unsafe { crate::shell_batch::collect(startup_items.clone(), config.context_menu_dialog_only); }
+        ExitProcess(0);
+    }
+    #[cfg(feature = "shell-broker-smoke")]
+    if elevation_requested {
+        for item in &startup_items {
+            crate::shell_batch::record_mock(&format!("STARTUP|{}", item.path));
+        }
+    }
     let _ = STARTUP_ITEMS.set(startup_items.clone());
+
+    if config.enable_context_menu {
+        let _ = crate::registry::register_context_menu();
+    }
 
     // If context menu dialog is enabled and we have args, bypass single instance and show dialog directly
     if !startup_items.is_empty() && config.context_menu_dialog_only {
@@ -180,11 +218,15 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
         ExitProcess(0);
     }
 
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_INSTANCE_CHECK");
     // 0. Single Instance Check
     let class_name = w!("CompactRS_Class");
     let hwnd_existing = FindWindowW(class_name.as_ptr(), std::ptr::null());
     
     if hwnd_existing != std::ptr::null_mut() {
+        #[cfg(feature = "shell-broker-smoke")]
+        crate::shell_batch::record_mock("MAIN_REUSED_EXISTING");
         if !startup_items.is_empty() {
             for item in startup_items {
                 let algo_str = match item.algorithm {
@@ -219,7 +261,8 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
         
         if len > 0 {
             let operation = w!("runas");
-            let args: Vec<String> = std::env::args().skip(1).collect();
+            let mut args: Vec<String> = std::env::args().skip(1).collect();
+            args.insert(0, "--elevated-once".to_string());
             let args_str = args.iter()
                 .map(|arg| {
                     if arg.contains(' ') || arg.contains('\t') || arg.is_empty() {
@@ -258,10 +301,6 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
         ExitProcess(1);
     }
 
-    if config.enable_context_menu {
-        let _ = crate::registry::register_context_menu();
-    }
-
     // Cleanup old executable
     if let Ok(exe) = std::env::current_exe() {
         let old_exe = exe.with_extension("old");
@@ -276,9 +315,17 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     // Get Instance Handle Manually
     let instance = GetModuleHandleW(ptr::null());
     
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_CREATE_START");
     let hwnd_main = match ui::window::create_main_window(instance) {
-        Ok(h) => h,
+        Ok(h) => {
+            #[cfg(feature = "shell-broker-smoke")]
+            crate::shell_batch::record_mock(&format!("MAIN_CREATED|{:x}", h as usize));
+            h
+        },
         Err(e) => {
+            #[cfg(feature = "shell-broker-smoke")]
+            crate::shell_batch::record_mock(&format!("MAIN_CREATE_FAILED|{}", e));
             let msg_text = ["Failed to create main window: ", &e].concat();
             let msg = to_wstring(&msg_text);
             MessageBoxW(std::ptr::null_mut(), msg.as_ptr(), w!("Error").as_ptr(), MB_ICONERROR | MB_OK);
@@ -288,6 +335,8 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     };
 
     // Message Loop
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_MESSAGE_LOOP");
     ui::framework::run_message_loop(hwnd_main);
 
     // Clean up
