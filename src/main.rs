@@ -170,9 +170,9 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     }
     // Initialize Theme System early
     crate::ui::theme::init();
-    crate::ui::theme::set_preferred_app_mode(true);
-
     let mut config = crate::config::AppConfig::load();
+    crate::ui::theme::set_preferred_app_mode(
+        crate::ui::theme::resolve_mode(config.theme));
     #[cfg(feature = "shell-broker-smoke")]
     {
         config.context_menu_dialog_only = std::env::var("COMPACTRS_TEST_DIALOG")
