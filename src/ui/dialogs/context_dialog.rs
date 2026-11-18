@@ -135,6 +135,10 @@ impl ContextDialogState {
                     }
                 };
                 let id = next_id.fetch_add(1, Ordering::Relaxed);
+                #[cfg(feature = "shell-broker-smoke")]
+                crate::shell_batch::record_mock(&format!("START|{}", item.path));
+                #[cfg(feature = "shell-broker-smoke")]
+                let mock_path = item.path.clone();
                 let _ = tx.send(UiMessage::ContextPath(item.path.clone()));
                 crate::engine::scanner::scan_path_streaming(
                     id, &item.path, tx.clone(), Some(&state), process_hidden
@@ -148,6 +152,8 @@ impl ContextDialogState {
                     skip_ext.clone(), set_attr, process_hidden,
                     false // Only the encompassing serial batch emits Finished.
                 );
+                #[cfg(feature = "shell-broker-smoke")]
+                crate::shell_batch::record_mock(&format!("DONE|{}", mock_path));
             }
             let _ = tx.send(UiMessage::Finished);
         });
