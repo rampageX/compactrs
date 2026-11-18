@@ -206,7 +206,11 @@ pub struct UpdateInfo {
 fn parse_update_info(json: &str, current: &str) -> Result<Option<UpdateInfo>, &'static str> {
     let latest = json_field(json, "tag_name").ok_or("Release tag missing")?;
     let remote = parse_version(&latest).ok_or("Invalid release version")?;
-    let local = parse_version(current).ok_or("Invalid installed version")?;
+    // Test builds have a local-only suffix for About/Settings display.
+    // Official remote release tags must still match the strict format.
+    let local = parse_version(current)
+        .or_else(|| current.strip_suffix("-test").and_then(parse_version))
+        .ok_or("Invalid installed version")?;
     if remote <= local { return Ok(None); }
     let asset = asset_object(json).ok_or("EXE asset not found")?;
     let url = json_field(asset, "browser_download_url").ok_or("Asset URL missing")?;
@@ -313,8 +317,9 @@ pub fn updater_selftest() -> bool {
     let older = matches!(parse_update_info(fake, "v2026.11.20-r0001"), Ok(None));
     let same = matches!(parse_update_info(fake, "v2026.11.19-r0912"), Ok(None));
     let malformed = parse_version("v2026.13.99-r2561").is_none();
+    let test_same = matches!(parse_update_info(fake, "v2026.11.19-r0912-test"), Ok(None));
     let expected_hash = sha256(b"abc").map(|x| x=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap_or(false);
-    newer && older && same && malformed && expected_hash
+    newer && older && same && test_same && malformed && expected_hash
 }
 
 #[cfg(feature = "shell-broker-smoke")]
