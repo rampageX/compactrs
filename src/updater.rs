@@ -308,6 +308,33 @@ pub fn download_and_start_update(info: &UpdateInfo) -> Result<(), &'static str> 
     Ok(())
 }
 
+/// Restore the original executable if ShellExecute cannot start the verified
+/// new binary. The current process is still running from the .old backup.
+pub fn rollback_after_restart_failure() -> Result<(), &'static str> {
+    let exe = std::env::current_exe().map_err(|_|"Cannot locate executable")?;
+    let old = exe.with_extension("exe.old");
+    let rejected = exe.with_extension("exe.failed");
+    if !old.is_file() { return Err("Original .old backup not found"); }
+    if rejected.exists() && std::fs::remove_file(&rejected).is_err() {
+        return Err("Cannot clear previous failed update");
+    }
+    let exe_w = to_w(&exe.to_string_lossy());
+    let old_w = to_w(&old.to_string_lossy());
+    let rejected_w = to_w(&rejected.to_string_lossy());
+    unsafe {
+        if MoveFileExW(exe_w.as_ptr(), rejected_w.as_ptr(), 1) == 0 {
+            return Err("Cannot quarantine failed update");
+        }
+        if MoveFileExW(old_w.as_ptr(), exe_w.as_ptr(), 1) == 0 {
+            // Do not lose the verified new binary if restoring the old fails.
+            let _ = MoveFileExW(rejected_w.as_ptr(), exe_w.as_ptr(), 1);
+            return Err("Failed to restore old executable; .old backup retained");
+        }
+    }
+    let _ = std::fs::remove_file(rejected);
+    Ok(())
+}
+
 #[cfg(feature = "shell-broker-smoke")]
 pub fn updater_selftest() -> bool {
     // CI-only: real Windows CryptoAPI, version ordering, and JSON asset parsing.
