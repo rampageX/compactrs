@@ -263,6 +263,10 @@ impl ContextDialogState {
         if self.layout_count != count || self.layout_clipped != clipped {
             self.layout_count = count;
             self.layout_clipped = clipped;
+            #[cfg(feature = "shell-broker-smoke")]
+            crate::shell_batch::record_mock(&format!(
+                "STACK_LAYOUT|{}|{}|{}", begun, clipped, begun.saturating_sub(MAX_VISIBLE)
+            ));
             SetWindowPos(
                 hwnd, std::ptr::null_mut(), 0, 0,
                 crate::ui::theme::scale(WINDOW_WIDTH),
