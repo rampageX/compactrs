@@ -218,11 +218,15 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
         ExitProcess(0);
     }
 
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_INSTANCE_CHECK");
     // 0. Single Instance Check
     let class_name = w!("CompactRS_Class");
     let hwnd_existing = FindWindowW(class_name.as_ptr(), std::ptr::null());
     
     if hwnd_existing != std::ptr::null_mut() {
+        #[cfg(feature = "shell-broker-smoke")]
+        crate::shell_batch::record_mock("MAIN_REUSED_EXISTING");
         if !startup_items.is_empty() {
             for item in startup_items {
                 let algo_str = match item.algorithm {
@@ -311,9 +315,17 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     // Get Instance Handle Manually
     let instance = GetModuleHandleW(ptr::null());
     
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_CREATE_START");
     let hwnd_main = match ui::window::create_main_window(instance) {
-        Ok(h) => h,
+        Ok(h) => {
+            #[cfg(feature = "shell-broker-smoke")]
+            crate::shell_batch::record_mock(&format!("MAIN_CREATED|{:x}", h as usize));
+            h
+        },
         Err(e) => {
+            #[cfg(feature = "shell-broker-smoke")]
+            crate::shell_batch::record_mock(&format!("MAIN_CREATE_FAILED|{}", e));
             let msg_text = ["Failed to create main window: ", &e].concat();
             let msg = to_wstring(&msg_text);
             MessageBoxW(std::ptr::null_mut(), msg.as_ptr(), w!("Error").as_ptr(), MB_ICONERROR | MB_OK);
@@ -323,6 +335,8 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     };
 
     // Message Loop
+    #[cfg(feature = "shell-broker-smoke")]
+    crate::shell_batch::record_mock("MAIN_MESSAGE_LOOP");
     ui::framework::run_message_loop(hwnd_main);
 
     // Clean up
