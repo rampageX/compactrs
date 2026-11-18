@@ -49,3 +49,10 @@ jobs:
           $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater" -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw "Updater self-test failed with exit code $($test.ExitCode)" }
           Write-Host "PASS: fork updater parser, version ordering, and CryptoAPI SHA256."
+      - name: Live fork Release API and asset SHA256 verification (no installation)
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater-live" -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "GitHub live updater test failed with code $($test.ExitCode)" }
+          Write-Host "PASS: fork latest release API, EXE download and SHA256 digest."
