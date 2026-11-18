@@ -162,6 +162,12 @@ fn is_admin() -> bool {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn WinMainCRTStartup() {
+    // A headless, CI-only validation of our update security checks. This
+    // branch is absent from production binaries.
+    #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-updater") {
+        ExitProcess(if crate::updater::updater_selftest() { 0 } else { 2 });
+    }
     // Initialize Theme System early
     crate::ui::theme::init();
     crate::ui::theme::set_preferred_app_mode(true);
