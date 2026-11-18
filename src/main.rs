@@ -179,6 +179,10 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     }
     let _ = STARTUP_ITEMS.set(startup_items.clone());
 
+    if config.enable_context_menu {
+        let _ = crate::registry::register_context_menu();
+    }
+
     // If context menu dialog is enabled and we have args, bypass single instance and show dialog directly
     if !startup_items.is_empty() && config.context_menu_dialog_only {
         let _ = CoInitializeEx(ptr::null_mut(), COINIT_APARTMENTTHREADED);
@@ -263,10 +267,6 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
             MB_ICONERROR | MB_OK
         );
         ExitProcess(1);
-    }
-
-    if config.enable_context_menu {
-        let _ = crate::registry::register_context_menu();
     }
 
     // Cleanup old executable
