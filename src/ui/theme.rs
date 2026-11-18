@@ -159,6 +159,12 @@ pub unsafe fn apply_theme(hwnd: HWND, control_type: ControlType, is_dark: bool) 
     // Re-open theme handles in both directions. Without this Windows can
     // retain dark visual-style assets after switching back to the light theme.
     SendMessageW(hwnd, WM_THEMECHANGED, 0, 0);
+    if control_type == ControlType::CheckBox {
+        // Native dark-theme BUTTON controls ignore WM_CTLCOLORBTN for captions.
+        // Our subclass repaints only the caption; the native check glyph and
+        // input semantics are preserved in both themes.
+        crate::ui::checkbox_caption::apply(hwnd, is_dark);
+    }
     InvalidateRect(hwnd, std::ptr::null(), 1);
 }
 
