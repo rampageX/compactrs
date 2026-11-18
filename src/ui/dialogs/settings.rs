@@ -915,7 +915,7 @@ impl WindowHandler for SettingsState {
                             if let Ok(exe) = std::env::current_exe() {
                                 let op = crate::utils::to_wstring("open"); 
                                 let path = crate::utils::to_wstring(exe.to_str().unwrap());
-                                ShellExecuteW(
+                                let result = ShellExecuteW(
                                     std::ptr::null_mut(),
                                     op.as_ptr(),
                                     path.as_ptr(),
@@ -923,7 +923,17 @@ impl WindowHandler for SettingsState {
                                     std::ptr::null(),
                                     SW_SHOWNORMAL
                                 );
-                                std::process::exit(0);
+                                if (result as isize) > 32 {
+                                    std::process::exit(0);
+                                }
+                                let rollback = crate::updater::rollback_after_restart_failure();
+                                Label::new(h_lbl).set_text(if rollback.is_ok() {
+                                    "Restart failed; original EXE restored."
+                                } else {
+                                    "Restart failed; .old backup retained. Restore manually."
+                                });
+                                Button::new(h_btn).set_text("Retry Update");
+                                Button::new(h_btn).set_enabled(true);
                             }
                         },
                         Err(e) => {
