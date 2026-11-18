@@ -44,6 +44,8 @@ jobs:
         shell: pwsh
         run: |
           $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
-          & $exe --selftest-updater
-          if ($LASTEXITCODE -ne 0) { throw "Updater self-test failed with exit code $LASTEXITCODE" }
+          # GUI subsystem apps do not reliably set PowerShell's $LASTEXITCODE.
+          # Start-Process -Wait gives the actual child exit code.
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater" -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Updater self-test failed with exit code $($test.ExitCode)" }
           Write-Host "PASS: fork updater parser, version ordering, and CryptoAPI SHA256."
