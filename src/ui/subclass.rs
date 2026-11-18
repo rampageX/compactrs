@@ -61,12 +61,28 @@ unsafe extern "system" fn theme_subclass_proc(
 
 /// Applies the visual theme to a control.
 pub unsafe fn apply_theme_to_control(hwnd: HWND, is_dark: bool) {
-    let mode = if is_dark { crate::w!("DarkMode_Explorer") } else { crate::w!("Explorer") }; // or just NULL for default
-    let null_str = crate::w!("");
-    
-    // For many controls, SetWindowTheme enables the modern look.
-    unsafe { crate::types::SetWindowTheme(hwnd, mode.as_ptr(), null_str.as_ptr()); }
-    
-    // Send a repaint
-    unsafe { InvalidateRect(hwnd, std::ptr::null(), 1); }
+    if hwnd.is_null() { return; }
+    let mut cls = [0u16; 48];
+    let len = GetClassNameW(hwnd, cls.as_mut_ptr(), cls.len() as i32);
+    let name = String::from_utf16_lossy(&cls[..len.max(0) as usize]).to_lowercase();
+    let kind = match name.as_str() {
+        "button" => match GetWindowLongW(hwnd, GWL_STYLE) as u32 & 0x0f {
+            0x07 => crate::ui::theme::ControlType::GroupBox,
+            0x02 | 0x03 | 0x05 | 0x06 => crate::ui::theme::ControlType::CheckBox,
+            0x04 | 0x09 => crate::ui::theme::ControlType::RadioButton,
+            _ => crate::ui::theme::ControlType::Button,
+        },
+        "combobox" => crate::ui::theme::ControlType::ComboBox,
+        "edit" => crate::ui::theme::ControlType::Edit,
+        "syslistview32" => crate::ui::theme::ControlType::List,
+        _ => {
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            return;
+        }
+    };
+    // Use the centralized control-type-specific theme. Passing an empty
+    // sub-app string to SetWindowTheme was disabling checkbox visuals and
+    // letting Windows draw black checkbox captions on dark backgrounds.
+    crate::ui::theme::apply_theme(hwnd, kind, is_dark);
+    InvalidateRect(hwnd, std::ptr::null(), 1);
 }
