@@ -166,7 +166,13 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     crate::ui::theme::init();
     crate::ui::theme::set_preferred_app_mode(true);
 
-    let config = crate::config::AppConfig::load();
+    let mut config = crate::config::AppConfig::load();
+    #[cfg(feature = "shell-broker-smoke")]
+    {
+        config.context_menu_dialog_only = std::env::var("COMPACTRS_TEST_DIALOG")
+            .map(|v| v == "1").unwrap_or(false);
+        config.enable_context_menu = false;
+    }
     crate::ui::theme::update_ui_scale(config.ui_scale_multiplier);
 
     // Parse CLI arguments.
@@ -186,9 +192,17 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     let startup_items = parse_cli_args();
     // Explorer calls static verbs once per selection; collect before requesting UAC.
     // The executable manifest is asInvoker so these short-lived processes stay unelevated.
-    if !is_admin() && !startup_items.is_empty() {
+    if !startup_items.is_empty()
+        && (!is_admin() || (cfg!(feature = "shell-broker-smoke") && !elevation_requested))
+    {
         unsafe { crate::shell_batch::collect(startup_items.clone(), config.context_menu_dialog_only); }
         ExitProcess(0);
+    }
+    #[cfg(feature = "shell-broker-smoke")]
+    if elevation_requested {
+        for item in &startup_items {
+            crate::shell_batch::record_mock(&format!("STARTUP|{}", item.path));
+        }
     }
     let _ = STARTUP_ITEMS.set(startup_items.clone());
 
