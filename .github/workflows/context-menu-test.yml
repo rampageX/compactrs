@@ -1,0 +1,28 @@
+name: Explorer single-UAC / Dialog serial smoke test
+on:
+  push:
+    branches:
+      - fix/explorer-single-uac-serial-dialog
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Build test binary (no release, no UPX)
+        shell: pwsh
+        run: cargo +nightly build --release --target x86_64-pc-windows-msvc
+        env:
+          APP_VERSION: v2026.11.18-shell-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CompactRS-shell-batch-test-x64
+          path: target/x86_64-pc-windows-msvc/release/compactrs.exe
+          if-no-files-found: error
