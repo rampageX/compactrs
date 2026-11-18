@@ -29,3 +29,12 @@ jobs:
           name: CompactRS-shell-batch-test-x64
           path: target/x86_64-pc-windows-msvc/release/compactrs.exe
           if-no-files-found: error
+      - name: Build CI-only mock UAC variant
+        shell: pwsh
+        run: cargo +nightly build --release --features shell-broker-smoke --target x86_64-pc-windows-msvc
+        env:
+          APP_VERSION: v2026.11.18-shell-mock
+          RUSTFLAGS: "-C target-feature=+crt-static"
+      - name: Exercise Windows Explorer broker and Dialog serial queue
+        shell: pwsh
+        run: ./scripts/smoke-shell-broker.ps1
