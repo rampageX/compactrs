@@ -174,7 +174,7 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     // Explorer calls static verbs once per selection; collect before requesting UAC.
     // The executable manifest is asInvoker so these short-lived processes stay unelevated.
     if !is_admin() && !startup_items.is_empty() {
-        unsafe { crate::shell_batch::collect(startup_items, config.context_menu_dialog_only); }
+        unsafe { crate::shell_batch::collect(startup_items.clone(), config.context_menu_dialog_only); }
         ExitProcess(0);
     }
     let _ = STARTUP_ITEMS.set(startup_items.clone());
