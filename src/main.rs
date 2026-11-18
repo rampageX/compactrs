@@ -169,7 +169,20 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
     let config = crate::config::AppConfig::load();
     crate::ui::theme::update_ui_scale(config.ui_scale_multiplier);
 
-    // Parse CLI arguments
+    // Parse CLI arguments.
+    // A one-way elevation marker prevents an incorrect token check or a failed
+    // UAC handoff from recursively producing unlimited prompts/processes.
+    let elevation_requested = std::env::args().any(|arg| arg == "--elevated-once");
+    if elevation_requested && !is_admin() {
+        MessageBoxW(
+            ptr::null_mut(),
+            w!("CompactRS could not obtain administrator privileges. Elevation was attempted once; no further UAC requests will be made.").as_ptr(),
+            w!("CompactRS - Elevation Failed").as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+        ExitProcess(1);
+    }
+
     let startup_items = parse_cli_args();
     // Explorer calls static verbs once per selection; collect before requesting UAC.
     // The executable manifest is asInvoker so these short-lived processes stay unelevated.
@@ -230,7 +243,8 @@ pub unsafe extern "system" fn WinMainCRTStartup() {
         
         if len > 0 {
             let operation = w!("runas");
-            let args: Vec<String> = std::env::args().skip(1).collect();
+            let mut args: Vec<String> = std::env::args().skip(1).collect();
+            args.insert(0, "--elevated-once".to_string());
             let args_str = args.iter()
                 .map(|arg| {
                     if arg.contains(' ') || arg.contains('\t') || arg.is_empty() {
