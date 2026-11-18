@@ -163,10 +163,15 @@ impl<'a> ControlBuilder<'a> {
     fn detect_control_type(&self) -> ControlType {
         if self.class_name == w!("STATIC") { ControlType::GroupBox } 
         else if self.class_name == w!("BUTTON") {
-            if (self.style & (BS_GROUPBOX as u32)) != 0 { ControlType::GroupBox }
-            else if (self.style & (BS_AUTOCHECKBOX as u32)) != 0 { ControlType::CheckBox }
-            else if (self.style & (BS_AUTORADIOBUTTON as u32)) != 0 { ControlType::RadioButton }
-            else { ControlType::Button }
+            // BS_* values are a TYPE field, not independent flags.
+            // The previous bitwise checks matched BS_AUTOCHECKBOX (0x03)
+            // as BS_GROUPBOX (0x07), selecting a classic/light-text theme.
+            match self.style & 0x000F {
+                0x07 => ControlType::GroupBox,
+                0x02 | 0x03 | 0x05 | 0x06 => ControlType::CheckBox,
+                0x04 | 0x09 => ControlType::RadioButton,
+                _ => ControlType::Button,
+            }
         } else if self.class_name == w!("COMBOBOX") { ControlType::ComboBox }
         else if self.class_name == w!("msctls_trackbar32") { ControlType::Trackbar }
         else if self.class_name == w!("EDIT") { ControlType::Edit }
