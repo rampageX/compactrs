@@ -72,8 +72,9 @@ try {
                 if ($mode -eq "stack7") {
                     # First 5 cards, then hide older ones. The top ellipsis
                     # starts after the sixth folder begins.
-                    $complete = $complete -and ($lines -contains "STACK_LAYOUT|6|true|1") -and
-                        ($lines -contains "STACK_LAYOUT|7|true|2")
+                    # WM_TIMER batches events; on small fast folders it can jump
+                    # directly from <=5 to 7 within one UI refresh.
+                    $complete = $complete -and ($lines -contains "STACK_LAYOUT|7|true|2")
                 }
             } else {
                 $complete = $true
