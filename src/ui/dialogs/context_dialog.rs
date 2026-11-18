@@ -312,7 +312,8 @@ impl WindowHandler for ContextDialogState {
                                 UiMessage::Finished => {
                                     let cancelled = self.global_state.load(Ordering::Relaxed)
                                         == ProcessingState::Stopped as u8;
-                                    if !cancelled && self.pending.lock().map_or(false, |q| !q.is_empty()) {
+                                    let more_queued = self.pending.lock().map_or(false, |q| !q.is_empty());
+                                    if !cancelled && more_queued {
                                         self.spawn_processing(hwnd);
                                         continue;
                                     }
