@@ -316,3 +316,22 @@ pub fn updater_selftest() -> bool {
     let expected_hash = sha256(b"abc").map(|x| x=="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap_or(false);
     newer && older && same && malformed && expected_hash
 }
+
+#[cfg(feature = "shell-broker-smoke")]
+pub fn updater_live_selftest() -> Result<(), &'static str> {
+    // Real GitHub API and asset download, but no executable is ever replaced.
+    let release = get(API)?;
+    let response = read_response(&release, MAX_RELEASE_JSON)?;
+    let json = std::str::from_utf8(&response).map_err(|_|"Malformed GitHub UTF-8")?;
+    let info = parse_update_info(json, "v2020.1.1-r0000")?
+        .ok_or("Expected a later fork release")?;
+    let asset = get(&info.download_url)?;
+    let exe = read_response(&asset, MAX_BINARY)?;
+    if exe.len() < 2 || &exe[..2] != b"MZ" {
+        return Err("GitHub asset missing PE header");
+    }
+    if sha256(&exe)? != info.sha256 {
+        return Err("Actual GitHub asset SHA256 does not match the release digest");
+    }
+    Ok(())
+}
