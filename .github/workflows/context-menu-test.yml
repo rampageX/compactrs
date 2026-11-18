@@ -56,3 +56,12 @@ jobs:
           $test = Start-Process -FilePath $exe -ArgumentList "--selftest-updater-live" -Wait -PassThru
           if ($test.ExitCode -ne 0) { throw "GitHub live updater test failed with code $($test.ExitCode)" }
           Write-Host "PASS: fork latest release API, EXE download and SHA256 digest."
+      - name: Verify painted dark checkbox captions with native Windows GDI
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/compactrs.exe"
+          $env:COMPACTRS_MOCK_LOG = "$env:RUNNER_TEMP\compactrs-caption-test.log"
+          $test = Start-Process -FilePath $exe -ArgumentList "--selftest-dark-checkbox" -Wait -PassThru
+          if (Test-Path $env:COMPACTRS_MOCK_LOG) { Get-Content $env:COMPACTRS_MOCK_LOG }
+          if ($test.ExitCode -ne 0) { throw "Native checkbox paint regression failed ($($test.ExitCode))" }
+          Write-Host "PASS: actual Windows dark checkbox caption pixels, native check state, dark/light toggling."
