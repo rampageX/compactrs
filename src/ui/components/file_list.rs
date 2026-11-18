@@ -491,6 +491,23 @@ pub unsafe fn handle_listview_customdraw(
             let sub_item = nmlvcd.i_sub_item;
             let row = nmlvcd.nmcd.dwItemSpec as usize;
 
+            // Flat ListView SetWindowTheme("") reverts selected-row highlight
+            // to the light system palette; control's selection state stays intact.
+            const CDIS_SELECTED: u32 = 0x0001;
+            let selected = (nmlvcd.nmcd.uItemState & CDIS_SELECTED) != 0;
+            nmlvcd.clr_text_bk = if selected && is_dark {
+                0x00383531 // slate selection, COLORREF (BGR)
+            } else if is_dark {
+                crate::ui::theme::COLOR_LIST_BG_DARK
+            } else {
+                crate::ui::theme::COLOR_LIST_BG_LIGHT
+            };
+            SetBkColor(nmlvcd.nmcd.hdc, nmlvcd.clr_text_bk);
+            if selected && is_dark {
+                // Block USER32's light native highlight during this paint.
+                nmlvcd.nmcd.uItemState &= !CDIS_SELECTED;
+            }
+
             if sub_item == columns::RATIO {
                 if row < filtered_items.len() {
                     if let Some(item) = items.get(filtered_items[row]) {
