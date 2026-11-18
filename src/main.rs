@@ -163,6 +163,11 @@ fn is_admin() -> bool {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn WinMainCRTStartup() {
     #[cfg(feature = "shell-broker-smoke")]
+    if std::env::args().any(|arg| arg == "--selftest-dark-checkbox") {
+        let result = unsafe { crate::ui::checkbox_caption::verify_dark_caption_pixels() };
+        ExitProcess(if result { 0 } else { 4 });
+    }
+    #[cfg(feature = "shell-broker-smoke")]
     if std::env::args().any(|arg| arg == "--selftest-updater-live") {
         ExitProcess(if crate::updater::updater_live_selftest().is_ok() { 0 } else { 3 });
     }
