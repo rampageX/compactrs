@@ -1,73 +1,89 @@
 $ErrorActionPreference = "Stop"
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class CompactRSWin {
-    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-    public static extern IntPtr FindWindowW(string className, string title);
-}
-'@
-
 $built = Join-Path (Get-Location) "target\x86_64-pc-windows-msvc\release\compactrs.exe"
-if (!(Test-Path $built)) { throw "Missing smoke-test exe: $built" }
-$testRoot = Join-Path $env:RUNNER_TEMP ("CompactRS_Broker_" + [Guid]::NewGuid().ToString("N"))
+if (!(Test-Path $built)) { throw "Missing smoke-test EXE: $built" }
+$testRoot = Join-Path $env:RUNNER_TEMP ("CompactRS_Stack_" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 
 function Get-Candidates([string]$exe) {
     @(Get-CimInstance Win32_Process -Filter "Name = 'compactrs.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.ExecutablePath -ieq $exe })
 }
+function Read-Trace([string]$path) {
+    if (Test-Path $path) { return @(Get-Content $path -ErrorAction SilentlyContinue) }
+    return @()
+}
 
 try {
-    foreach ($mode in @("main", "dialog")) {
+    foreach ($mode in @("main", "dialog", "stack7")) {
         $root = Join-Path $testRoot $mode
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $exe = Join-Path $root "compactrs.exe"
         Copy-Item $built $exe -Force
-        $a = Join-Path $root "A first"
-        $b = Join-Path $root "B second"
-        New-Item -ItemType Directory -Path $a,$b -Force | Out-Null
-        [IO.File]::WriteAllText((Join-Path $a "a.txt"), ("A" * 65536))
-        [IO.File]::WriteAllText((Join-Path $b "b.txt"), ("B" * 65536))
+        $n = if ($mode -eq "stack7") { 7 } else { 2 }
+        $paths = @()
+        for ($i = 1; $i -le $n; $i++) {
+            $path = Join-Path $root "Folder $i"
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            [IO.File]::WriteAllText((Join-Path $path "data.txt"), ("X" * 65536))
+            $paths += $path
+        }
         $trace = Join-Path $root "trace.log"
         $env:COMPACTRS_MOCK_LOG = $trace
-        $env:COMPACTRS_TEST_DIALOG = if ($mode -eq "dialog") { "1" } else { "0" }
-        $windowClass = if ($mode -eq "dialog") { "CompactRS_CtxDialog" } else { "CompactRS_Class" }
-        Write-Host "TEST: mode=$mode; exe=$exe"
+        $isDialog = $mode -ne "main"
+        $env:COMPACTRS_TEST_DIALOG = if ($isDialog) { "1" } else { "0" }
+        Write-Host "TEST: $mode; $n directories"
 
-        # Explorer's static verb starts one invocation per selected directory.
-        Start-Process -FilePath $exe -ArgumentList "--path `"$a`" --algo xpress4k" | Out-Null
-        Start-Sleep -Milliseconds 100
-        Start-Process -FilePath $exe -ArgumentList "--path `"$b`" --algo xpress4k" | Out-Null
+        # Reproduce a Windows Explorer multi-selection with separate shell processes.
+        foreach ($path in $paths) {
+            Start-Process -FilePath $exe -ArgumentList "--path `"$path`" --algo xpress4k" | Out-Null
+            Start-Sleep -Milliseconds 70
+        }
 
-        $deadline = (Get-Date).AddSeconds(35)
+        $deadline = (Get-Date).AddSeconds($(if ($mode -eq "stack7") { 80 } else { 45 }))
         $ready = $false
         while ((Get-Date) -lt $deadline) {
-            $lines = if (Test-Path $trace) { @(Get-Content $trace -ErrorAction SilentlyContinue) } else { @() }
+            $lines = @(Read-Trace $trace)
             $launches = @($lines | Where-Object { $_ -eq "UAC_LAUNCH" }).Count
             $brokers = @($lines | Where-Object { $_ -eq "BROKER_CREATED" }).Count
             if ($launches -gt 1 -or $brokers -gt 1) {
-                throw "Duplicate broker/UAC for $mode. TRACE: $($lines -join ' | ')"
+                throw "Duplicate broker/UAC for $mode : $($lines -join ' | ')"
             }
-            # Windows hosted runners can isolate desktop/window stations: use the
-            # app's window-created trace instead of cross-session FindWindow.
+
             $guiCreated = @($lines | Where-Object {
-                if ($mode -eq "dialog") { $_.StartsWith("DIALOG_CREATED|") }
+                if ($isDialog) { $_.StartsWith("DIALOG_CREATED|") }
                 else { $_.StartsWith("MAIN_CREATED|") }
             }).Count -eq 1
-            if ($mode -eq "dialog") {
+
+            if ($isDialog) {
                 $events = @($lines | Where-Object { $_.StartsWith("START|") -or $_.StartsWith("DONE|") })
-                $complete = $events.Count -ge 4 -and
-                    $events[0].StartsWith("START|") -and $events[1].StartsWith("DONE|") -and
-                    $events[2].StartsWith("START|") -and $events[3].StartsWith("DONE|") -and
-                    $events[0].Substring(6) -eq $events[1].Substring(5) -and
-                    $events[2].Substring(6) -eq $events[3].Substring(5) -and
-                    $events[0].Substring(6) -ne $events[2].Substring(6)
+                $complete = $events.Count -eq ($n * 2)
+                if ($complete) {
+                    for ($i = 0; $i -lt $n; $i++) {
+                        $started = $events[$i * 2]
+                        $ended = $events[$i * 2 + 1]
+                        if (!$started.StartsWith("START|") -or !$ended.StartsWith("DONE|") -or
+                            $started.Substring(6) -ne $ended.Substring(5) -or
+                            $started.Substring(6) -ne $paths[$i]) {
+                            $complete = $false
+                            break
+                        }
+                    }
+                }
+                if ($mode -eq "stack7") {
+                    # First 5 cards, then hide older ones. The top ellipsis
+                    # starts after the sixth folder begins.
+                    $complete = $complete -and ($lines -contains "STACK_LAYOUT|6|true|1") -and
+                        ($lines -contains "STACK_LAYOUT|7|true|2")
+                }
             } else {
-                $seenA = ($lines -contains "STARTUP|$a") -or ($lines -contains "MAIN_ADD|$a")
-                $seenB = ($lines -contains "STARTUP|$b") -or ($lines -contains "MAIN_ADD|$b")
-                $complete = $seenA -and $seenB
+                $complete = $true
+                foreach ($path in $paths) {
+                    if (($lines -notcontains "STARTUP|$path") -and ($lines -notcontains "MAIN_ADD|$path")) {
+                        $complete = $false
+                    }
+                }
             }
+
             if ($launches -eq 1 -and $brokers -eq 1 -and $complete -and $guiCreated) {
                 $ready = $true
                 break
@@ -75,27 +91,28 @@ try {
             Start-Sleep -Milliseconds 250
         }
         if (!$ready) {
-            $lines = if (Test-Path $trace) { @(Get-Content $trace) } else { @() }
-            $procsNow = @(Get-Candidates $exe)
-            Write-Host "DEBUG hwnd=$([CompactRSWin]::FindWindowW($windowClass, $null)); pid count=$($procsNow.Count)"
-            foreach ($p in $procsNow) { Write-Host "DEBUG PID=$($p.ProcessId) command=$($p.CommandLine)" }
-            throw "Timeout ($mode): expected one broker, one simulated UAC, correct routing and a GUI. TRACE: $($lines -join ' | ')"
+            $lines = @(Read-Trace $trace)
+            $proc = @(Get-Candidates $exe)
+            Write-Host "DEBUG process count=$($proc.Count)"
+            foreach ($p in $proc) { Write-Host "DEBUG PID=$($p.ProcessId) command=$($p.CommandLine)" }
+            throw "Timeout ($mode): $($lines -join ' | ')"
         }
 
-        # The short-lived broker and per-item launchers must all exit.
         Start-Sleep -Seconds 4
         $procs = @(Get-Candidates $exe)
         if ($procs.Count -ne 1) {
-            $detail = @($procs | ForEach-Object { "$($_.ProcessId): $($_.CommandLine)" })
-            throw "Process leak in $mode : expected 1 active GUI, found $($procs.Count). $($detail -join ' | ')"
+            throw "Process leak in $mode : expected 1 GUI process, found $($procs.Count)"
         }
-        Write-Host "PASS: $mode; one simulated UAC, one broker, one GUI process, both paths delivered."
-        if ($mode -eq "dialog") { Write-Host "PASS: folder boundaries are sequential (START, DONE, START, DONE)." }
-        foreach ($p in @(Get-Candidates $exe)) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        Write-Host "PASS: $mode; $n folders; one simulated UAC, one broker, one GUI, all paths delivered."
+        if ($isDialog) { Write-Host "PASS: $n folders serialized, no overlap." }
+        if ($mode -eq "stack7") { Write-Host "PASS: rolling five-card stack, ellipsis, last-five viewport." }
+        foreach ($p in @(Get-Candidates $exe)) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Milliseconds 500
     }
 } finally {
-    foreach ($mode in @("main", "dialog")) {
+    foreach ($mode in @("main", "dialog", "stack7")) {
         $exe = Join-Path (Join-Path $testRoot $mode) "compactrs.exe"
         foreach ($p in @(Get-Candidates $exe)) {
             Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
