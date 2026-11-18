@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - fix/explorer-single-uac-serial-dialog
+      - feature/dark-selection-dialog-stack
   workflow_dispatch:
 
 permissions:
